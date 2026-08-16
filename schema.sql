@@ -72,6 +72,55 @@ AS $$
   );
 $$;
 
+-- Promote an existing profile by email. Calls from the SQL Editor have no
+-- JWT (auth.uid() is NULL), while authenticated RPC calls are admin-only.
+CREATE OR REPLACE FUNCTION public.promote_to_admin(target_email TEXT)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  target_user_id UUID;
+BEGIN
+  IF auth.uid() IS NOT NULL AND NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Only an administrator can promote another user'
+      USING ERRCODE = '42501';
+  END IF;
+
+  IF NULLIF(btrim(target_email), '') IS NULL THEN
+    RAISE EXCEPTION 'An email address is required'
+      USING ERRCODE = '22023';
+  END IF;
+
+  SELECT id INTO target_user_id
+  FROM auth.users
+  WHERE lower(email) = lower(btrim(target_email));
+
+  IF target_user_id IS NULL THEN
+    RAISE EXCEPTION 'No auth user found for email %', target_email
+      USING ERRCODE = 'P0002';
+  END IF;
+
+  UPDATE public.profiles
+  SET role = 'admin'
+  WHERE id = target_user_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'The user exists but has no profile; sign in once before promoting'
+      USING ERRCODE = 'P0002';
+  END IF;
+
+  RETURN target_user_id;
+END;
+$$;
+
+-- Functions are executable by PUBLIC unless explicitly restricted. Keep the
+-- bootstrap path available to the SQL Editor and expose RPC only to signed-in
+-- users; the function itself rejects every non-admin authenticated caller.
+REVOKE ALL ON FUNCTION public.promote_to_admin(TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.promote_to_admin(TEXT) TO authenticated;
+
 -- Keeps updated_at fresh on tables that have the column
 CREATE OR REPLACE FUNCTION public.touch_updated_at()
 RETURNS TRIGGER
@@ -467,7 +516,11 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  IF public.is_admin() THEN
+  -- SQL Editor and trusted server-side/service-role operations do not carry
+  -- an end-user JWT, so auth.uid() is NULL. They must be allowed through for
+  -- initial admin bootstrapping; browser requests are still constrained by
+  -- RLS and always have a non-NULL uid here.
+  IF auth.uid() IS NULL OR public.is_admin() THEN
     RETURN NEW;
   END IF;
 
@@ -629,7 +682,7 @@ WHERE p.role = 'student';
 
 -- =====================================================================
 -- 12. PROMOTE YOURSELF TO ADMIN
---     Sign up through the site first, then run this once with your email
+--     Sign up through the site first, then run this in the SQL Editor.
+--     The function raises a clear error if the auth user or profile is absent.
 -- =====================================================================
--- UPDATE public.profiles SET role = 'admin'
--- WHERE id = (SELECT id FROM auth.users WHERE email = 'taha@example.com');
+-- SELECT public.promote_to_admin('taha@example.com');
