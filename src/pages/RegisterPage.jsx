@@ -1,0 +1,365 @@
+import { useState } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+import { motion } from 'framer-motion'
+import confetti from 'canvas-confetti'
+import { User, Phone, Lock, Eye, EyeOff, GraduationCap, MapPin, Sparkles, UserCheck, ArrowRight, ArrowLeft } from 'lucide-react'
+import { YEARS, GOVERNORATES } from '../data/dummyData'
+import { supabase } from '../lib/supabase'
+import { useLanguage } from '../lib/i18n.jsx'
+
+export default function RegisterPage() {
+  const { lang, t } = useLanguage()
+  const navigate = useNavigate()
+  const [fullName, setFullName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [parentPhone, setParentPhone] = useState('')
+  const [selectedYear, setSelectedYear] = useState('5') // default 2nd Sec
+  const [governorate, setGovernorate] = useState('القاهرة')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const [errorMsg, setErrorMsg] = useState('')
+  const [isSuccess, setIsSuccess] = useState(false)
+
+  const ArrowIcon = lang === 'ar' ? ArrowLeft : ArrowRight
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setErrorMsg('')
+
+    if (!fullName || !email || !phone || !parentPhone || !password || !confirmPassword) {
+      setErrorMsg(lang === 'ar' ? 'يرجى ملء جميع الحقول المطلوبة' : 'Please fill out all required fields.')
+      return
+    }
+
+    if (password !== confirmPassword) {
+      setErrorMsg(lang === 'ar' ? 'كلمتا المرور غير متطابقتين' : 'Passwords do not match.')
+      return
+    }
+
+    if (password.length < 6) {
+      setErrorMsg(lang === 'ar' ? 'كلمة المرور يجب أن تكون 6 أحرف أو أرقام على الأقل' : 'Password must be at least 6 characters.')
+      return
+    }
+
+    setIsLoading(true)
+
+    try {
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+      })
+
+      if (authError) {
+        if (authError.message?.toLowerCase().includes('already registered')) {
+          setErrorMsg(lang === 'ar' ? 'هذا البريد الإلكتروني مُسجّل بالفعل.' : 'This email is already registered.')
+        } else if (authError.code === 'email_address_invalid') {
+          setErrorMsg(lang === 'ar' ? 'صيغة البريد الإلكتروني غير صحيحة.' : 'Invalid email address format.')
+        } else {
+          setErrorMsg(lang === 'ar' ? 'حدث خطأ أثناء إنشاء الحساب، حاول مجدداً.' : 'An error occurred during account creation.')
+        }
+        setIsLoading(false)
+        return
+      }
+
+      if (!authData.user) {
+        setErrorMsg(lang === 'ar' ? 'حدث خطأ غير متوقع، حاول مجدداً.' : 'An unexpected error occurred.')
+        setIsLoading(false)
+        return
+      }
+
+      const { error: profileError } = await supabase.from('profiles').insert([
+        {
+          id: authData.user.id,
+          full_name: fullName,
+          phone,
+          parent_phone: parentPhone,
+          year_id: selectedYear,
+          governorate,
+          role: 'student',
+        },
+      ])
+
+      if (profileError) {
+        if (profileError.message?.toLowerCase().includes('duplicate')) {
+          setErrorMsg(lang === 'ar' ? 'رقم الهاتف هذا مُسجّل بحساب بالفعل.' : 'This phone number is already registered.')
+        } else {
+          setErrorMsg(lang === 'ar' ? 'تم إنشاء الحساب ولكن حدث خطأ أثناء حفظ البيانات.' : 'Account created, but profile save failed.')
+        }
+        setIsLoading(false)
+        return
+      }
+
+      setIsLoading(false)
+      setIsSuccess(true)
+
+      try {
+        confetti({
+          particleCount: 100,
+          spread: 70,
+          origin: { y: 0.6 },
+        })
+      } catch (err) {
+        console.log(err)
+      }
+
+      setTimeout(() => {
+        navigate('/')
+      }, 2000)
+    } catch (err) {
+      console.error(err)
+      setErrorMsg(lang === 'ar' ? 'حدث خطأ غير متوقع، حاول مجدداً.' : 'An unexpected error occurred.')
+      setIsLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-[90vh] flex items-center justify-center px-4 py-12 relative overflow-hidden font-ibm bg-slate-50 dark:bg-black">
+      {/* Ambient glow */}
+      <div className="absolute top-10 ltr:right-10 rtl:left-10 w-96 h-96 bg-yellow-400/15 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-10 ltr:left-10 rtl:right-10 w-96 h-96 bg-yellow-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      <motion.div
+        initial={{ opacity: 0, y: 25, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.5, ease: 'easeOut' }}
+        className="w-full max-w-2xl z-10"
+      >
+        <div className="bg-white dark:bg-zinc-900 backdrop-blur-md rounded-3xl p-6 sm:p-10 shadow-2xl border border-slate-200 dark:border-zinc-800 relative overflow-hidden">
+          {/* Top banner accent */}
+          <div className="absolute top-0 inset-x-0 h-2 bg-yellow-400" />
+
+          {/* Header */}
+          <div className="text-center space-y-2 mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-yellow-400/20 text-yellow-600 dark:text-yellow-400 mb-2 shadow-inner border border-yellow-400/30">
+              <UserCheck className="w-8 h-8" />
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold font-outfit text-slate-900 dark:text-white">
+              {t('registerTitle')}
+            </h1>
+            <p className="text-sm text-slate-600 dark:text-zinc-400 font-ibm">
+              {t('registerSubtitle')}
+            </p>
+          </div>
+
+          {/* Messages */}
+          {errorMsg && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="mb-6 p-4 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-sm font-bold text-center"
+            >
+              {errorMsg}
+            </motion.div>
+          )}
+
+          {isSuccess && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="mb-6 p-5 rounded-2xl bg-yellow-400/20 border border-yellow-400/40 text-yellow-800 dark:text-yellow-300 text-center font-ibm space-y-2"
+            >
+              <div className="flex items-center justify-center gap-2 font-bold text-lg">
+                <Sparkles className="w-6 h-6 text-yellow-500 animate-bounce" />
+                <span>{lang === 'ar' ? 'تم إنشاء الحساب بنجاح!' : 'Account Created Successfully!'}</span>
+              </div>
+              <p className="text-sm">{lang === 'ar' ? 'أهلاً بك في فيزكس هاب، جاري توجيهك الآن...' : 'Welcome to Physics Hub, redirecting now...'}</p>
+            </motion.div>
+          )}
+
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="space-y-5 font-ibm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              {/* Full Name */}
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('fullNameLabel')}
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    required
+                    placeholder={lang === 'ar' ? 'أحمد محمد علي' : 'John Alex Smith'}
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    className="w-full px-4 py-3.5 ltr:pl-11 rtl:pr-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth"
+                  />
+                  <User className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500" />
+                </div>
+              </div>
+
+              {/* Email */}
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('emailLabel')}
+                </label>
+                <div className="relative">
+                  <input
+                    type="email"
+                    required
+                    placeholder="example@gmail.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    dir="ltr"
+                    className="w-full px-4 py-3.5 ltr:pl-11 rtl:pr-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth ltr:text-left rtl:text-right"
+                  />
+                  <User className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500" />
+                </div>
+              </div>
+
+              {/* Student Phone */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('studentPhoneLabel')}
+                </label>
+                <div className="relative">
+                  <input
+                    type="tel"
+                    required
+                    placeholder="01012345678"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    className="w-full px-4 py-3.5 ltr:pl-11 rtl:pr-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth"
+                  />
+                  <Phone className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500" />
+                </div>
+              </div>
+
+              {/* Parent Phone */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('parentPhoneLabel')}
+                </label>
+                <div className="relative">
+                  <input
+                    type="tel"
+                    required
+                    placeholder="01112345678"
+                    value={parentPhone}
+                    onChange={(e) => setParentPhone(e.target.value)}
+                    className="w-full px-4 py-3.5 ltr:pl-11 rtl:pr-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth"
+                  />
+                  <Phone className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500" />
+                </div>
+              </div>
+
+              {/* Grade / Year */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('gradeLabel')}
+                </label>
+                <div className="relative">
+                  <select
+                    value={selectedYear}
+                    onChange={(e) => setSelectedYear(e.target.value)}
+                    className="w-full px-4 py-3.5 ltr:pl-11 rtl:pr-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth appearance-none"
+                  >
+                    {YEARS.map((y) => (
+                      <option key={y.id} value={y.id}>
+                        {lang === 'ar' ? y.titleAr : y.title} ({lang === 'ar' ? y.badgeAr : y.badge})
+                      </option>
+                    ))}
+                  </select>
+                  <GraduationCap className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500 pointer-events-none" />
+                </div>
+              </div>
+
+              {/* Governorate */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('governorateLabel')}
+                </label>
+                <div className="relative">
+                  <select
+                    value={governorate}
+                    onChange={(e) => setGovernorate(e.target.value)}
+                    className="w-full px-4 py-3.5 ltr:pl-11 rtl:pr-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth appearance-none"
+                  >
+                    {GOVERNORATES.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </select>
+                  <MapPin className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500 pointer-events-none" />
+                </div>
+              </div>
+
+              {/* Password */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('passwordLabel')}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full px-4 py-3.5 ltr:pl-11 ltr:pr-11 rtl:pr-11 rtl:pl-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth"
+                  />
+                  <Lock className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute top-4 ltr:right-3.5 rtl:left-3.5 text-slate-400 dark:text-zinc-500 hover:text-slate-600 dark:hover:text-zinc-200"
+                    aria-label="Toggle password visibility"
+                  >
+                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Confirm Password */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('confirmPasswordLabel')}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    placeholder="••••••••"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full px-4 py-3.5 ltr:pl-11 rtl:pr-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth"
+                  />
+                  <Lock className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500" />
+                </div>
+              </div>
+            </div>
+
+            {/* Submit Button */}
+            <motion.button
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.99 }}
+              type="submit"
+              disabled={isLoading || isSuccess}
+              className="w-full py-4 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-base shadow-lg shadow-yellow-400/20 disabled:opacity-70 transition flex items-center justify-center gap-2 mt-6"
+            >
+              {isLoading ? (
+                <div className="w-6 h-6 border-3 border-black border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <>
+                  <span>{t('registerBtn')}</span>
+                  <ArrowIcon className="w-5 h-5" />
+                </>
+              )}
+            </motion.button>
+          </form>
+
+          {/* Footer link */}
+          <div className="mt-8 pt-6 border-t border-slate-200 dark:border-zinc-800 text-center text-sm font-ibm text-slate-600 dark:text-zinc-400">
+            {t('alreadyHaveAccount')}{' '}
+            <Link to="/login" className="font-bold text-yellow-600 dark:text-yellow-400 hover:underline">
+              {t('navLogin')}
+            </Link>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  )
+}
