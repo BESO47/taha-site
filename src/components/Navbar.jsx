@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Menu, X, Sun, Moon, LogIn, LogOut, UserPlus, FileText, Home, User, BookOpen, ChevronDown, Globe, Zap } from 'lucide-react'
-import { supabase } from '../lib/supabase'
+import { Menu, X, Sun, Moon, LogIn, LogOut, UserPlus, FileText, Home, User, BookOpen, ChevronDown, Globe, Zap, Video, LayoutDashboard } from 'lucide-react'
 import { YEARS } from '../data/dummyData'
 import { useLanguage } from '../lib/i18n.jsx'
+import { useAuth } from '../lib/auth.jsx'
 
 export default function Navbar() {
   const { lang, toggleLanguage, t } = useLanguage()
@@ -15,9 +15,8 @@ export default function Navbar() {
     if (saved) return saved === 'dark'
     return true
   })
-  const [session, setSession] = useState(null)
-  const [userName, setUserName] = useState('')
-  const [checkingSession, setCheckingSession] = useState(true)
+  const { session, profile, isAdmin, loading: checkingSession, signOut } = useAuth()
+  const userName = profile?.full_name || session?.user?.email || ''
   const [lessonsMenuOpen, setLessonsMenuOpen] = useState(false)
   const [mobileLessonsOpen, setMobileLessonsOpen] = useState(false)
   const lessonsMenuRef = useRef(null)
@@ -45,35 +44,8 @@ export default function Navbar() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  useEffect(() => {
-    const loadSession = async (currentSession) => {
-      setSession(currentSession)
-      if (currentSession) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('full_name')
-          .eq('id', currentSession.user.id)
-          .single()
-        setUserName(profile?.full_name || currentSession.user.email)
-      } else {
-        setUserName('')
-      }
-    }
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      loadSession(session)
-      setCheckingSession(false)
-    })
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      loadSession(session)
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [])
-
   const handleLogout = async () => {
-    await supabase.auth.signOut()
+    await signOut()
     navigate('/')
   }
 
@@ -165,6 +137,45 @@ export default function Navbar() {
                 <FileText className="w-4 h-4" />
                 <span>{t('navPastExams')}</span>
               </Link>
+
+              {session && (
+                <Link
+                  to="/videos"
+                  className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 ${isActive('/videos')
+                    ? 'bg-yellow-400/20 text-yellow-400 border border-yellow-400/30 shadow-inner'
+                    : 'text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400'
+                    }`}
+                >
+                  <Video className="w-4 h-4" />
+                  <span>{t('navVideos')}</span>
+                </Link>
+              )}
+
+              {session && !isAdmin && (
+                <Link
+                  to="/profile"
+                  className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 ${isActive('/profile')
+                    ? 'bg-yellow-400/20 text-yellow-400 border border-yellow-400/30 shadow-inner'
+                    : 'text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400'
+                    }`}
+                >
+                  <User className="w-4 h-4" />
+                  <span>{t('navProfile')}</span>
+                </Link>
+              )}
+
+              {isAdmin && (
+                <Link
+                  to="/admin"
+                  className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 ${isActive('/admin')
+                    ? 'bg-yellow-400/20 text-yellow-400 border border-yellow-400/30 shadow-inner'
+                    : 'text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400'
+                    }`}
+                >
+                  <LayoutDashboard className="w-4 h-4" />
+                  <span>{t('navAdmin')}</span>
+                </Link>
+              )}
             </div>
           </div>
 
@@ -324,6 +335,36 @@ export default function Navbar() {
               <FileText className="w-4 h-4" />
               <span>{t('navPastExams')}</span>
             </Link>
+
+            {session && (
+              <Link
+                to="/videos"
+                className="px-4 py-2.5 rounded-xl text-sm font-bold text-white hover:bg-zinc-800 hover:text-yellow-400 flex items-center gap-2"
+              >
+                <Video className="w-4 h-4" />
+                <span>{t('navVideos')}</span>
+              </Link>
+            )}
+
+            {session && !isAdmin && (
+              <Link
+                to="/profile"
+                className="px-4 py-2.5 rounded-xl text-sm font-bold text-white hover:bg-zinc-800 hover:text-yellow-400 flex items-center gap-2"
+              >
+                <User className="w-4 h-4" />
+                <span>{t('navProfile')}</span>
+              </Link>
+            )}
+
+            {isAdmin && (
+              <Link
+                to="/admin"
+                className="px-4 py-2.5 rounded-xl text-sm font-bold text-white hover:bg-zinc-800 hover:text-yellow-400 flex items-center gap-2"
+              >
+                <LayoutDashboard className="w-4 h-4" />
+                <span>{t('navAdmin')}</span>
+              </Link>
+            )}
 
             <div className="pt-2 border-t border-zinc-800 flex flex-col gap-2">
               {checkingSession ? null : session ? (

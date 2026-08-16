@@ -298,53 +298,25 @@ export async function toggleStudentActiveInSupabase(id, currentStatus) {
   if (error) throw error
 }
 
-// SQL Schema Export
+// SQL Schema Export — the canonical script lives in schema.sql at the repo
+// root (tables + RLS + triggers + analytics view). This short version is just
+// what the dashboard modal shows; run the full file in the Supabase SQL editor.
 export const SUPABASE_SQL_SCHEMA = `
--- 1. Create Profiles / Students Table
-CREATE TABLE IF NOT EXISTS public.profiles (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  full_name TEXT NOT NULL,
-  phone TEXT NOT NULL UNIQUE,
-  parent_phone TEXT NOT NULL,
-  year_id TEXT NOT NULL,
-  governorate TEXT NOT NULL,
-  is_active BOOLEAN DEFAULT true,
-  role TEXT DEFAULT 'student',
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
-);
+-- Run the COMPLETE script from schema.sql in your repo.
+-- It creates every table below plus RLS policies, guard triggers,
+-- the submissions storage bucket and the student_analytics view.
 
--- 2. Create Lessons Table
-CREATE TABLE IF NOT EXISTS public.lessons (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  year_id TEXT NOT NULL,
-  semester INT NOT NULL DEFAULT 1,
-  branch TEXT NOT NULL,
-  unit TEXT NOT NULL,
-  title TEXT NOT NULL,
-  duration TEXT NOT NULL,
-  views TEXT DEFAULT '0',
-  video_url TEXT NOT NULL,
-  is_free BOOLEAN DEFAULT true,
-  summary_pdf_name TEXT,
-  summary_pdf_url TEXT,
-  description TEXT,
-  quiz_json JSONB DEFAULT '[]'::jsonb,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
-);
+-- profiles      : students + admins (role, is_active)
+-- lessons       : existing video lessons
+-- past_exams    : governorate exam papers
+-- videos        : YouTube library managed from the dashboard
+-- quizzes       : quiz definitions (max_score, date, grade)
+-- grades        : one score per student per quiz
+-- assignments   : homework tasks (due_date, max_score)
+-- submissions   : student answers + teacher score/feedback
+-- attendance    : present / absent / late / excused per session
 
--- 3. Create Past Exams Table
-CREATE TABLE IF NOT EXISTS public.past_exams (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  year_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  governorate TEXT NOT NULL,
-  year_num TEXT NOT NULL,
-  semester INT DEFAULT 1,
-  branch TEXT NOT NULL,
-  pdf_name TEXT NOT NULL,
-  pdf_size TEXT DEFAULT '2.0 MB',
-  pdf_url TEXT,
-  video_solution_url TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
-);
+-- Then promote yourself to teacher:
+UPDATE public.profiles SET role = 'admin'
+WHERE id = (SELECT id FROM auth.users WHERE email = 'YOUR_EMAIL_HERE');
 `

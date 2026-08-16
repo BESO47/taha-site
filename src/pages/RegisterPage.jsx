@@ -74,6 +74,7 @@ export default function RegisterPage() {
         {
           id: authData.user.id,
           full_name: fullName,
+          email,
           phone,
           parent_phone: parentPhone,
           year_id: selectedYear,
