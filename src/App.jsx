@@ -3,11 +3,13 @@ import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 
 import { LanguageProvider } from './lib/i18n.jsx'
+import { AuthProvider } from './lib/auth.jsx'
 import Navbar from './components/Navbar.jsx'
 import Footer from './components/Footer.jsx'
 import WhatsAppButton from './components/WhatsAppButton.jsx'
 import FloatingPhysicsBg from './components/FloatingPhysicsBg.jsx'
 import ProtectedAdminRoute from './components/ProtectedAdminRoute.jsx'
+import ProtectedStudentRoute from './components/ProtectedStudentRoute.jsx'
 
 import HomePage from './pages/HomePage.jsx'
 import LoginPage from './pages/LoginPage.jsx'
@@ -16,6 +18,8 @@ import YearDetailPage from './pages/YearDetailPage.jsx'
 import LessonDetailPage from './pages/LessonDetailPage.jsx'
 import PastExamsPage from './pages/PastExamsPage.jsx'
 import AdminDashboardPage from './pages/AdminDashboardPage.jsx'
+import StudentProfilePage from './pages/StudentProfilePage.jsx'
+import VideosPage from './pages/VideosPage.jsx'
 
 // Helper component to scroll to top on route change
 function ScrollToTop() {
@@ -48,6 +52,22 @@ function AnimatedRoutes() {
           <Route path="/years/:yearId" element={<YearDetailPage />} />
           <Route path="/lessons/:lessonId" element={<LessonDetailPage />} />
           <Route path="/exams" element={<PastExamsPage />} />
+          <Route
+            path="/profile"
+            element={
+              <ProtectedStudentRoute>
+                <StudentProfilePage />
+              </ProtectedStudentRoute>
+            }
+          />
+          <Route
+            path="/videos"
+            element={
+              <ProtectedStudentRoute>
+                <VideosPage />
+              </ProtectedStudentRoute>
+            }
+          />
           <Route
             path="/admin"
             element={
@@ -118,16 +138,18 @@ export default function App() {
 
   return (
     <LanguageProvider>
-      <BrowserRouter>
-        <ScrollToTop />
-        <div className="flex flex-col justify-between h-full w-full relative min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-zinc-100 smooth font-ibm selection:bg-yellow-400 selection:text-black">
-          <FloatingPhysicsBg />
-          <Navbar />
-          <AnimatedRoutes />
-          <Footer />
-          <WhatsAppButton />
-        </div>
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <ScrollToTop />
+          <div className="flex flex-col justify-between h-full w-full relative min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-zinc-100 smooth font-ibm selection:bg-yellow-400 selection:text-black">
+            <FloatingPhysicsBg />
+            <Navbar />
+            <AnimatedRoutes />
+            <Footer />
+            <WhatsAppButton />
+          </div>
+        </BrowserRouter>
+      </AuthProvider>
     </LanguageProvider>
   )
 }

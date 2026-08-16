@@ -1,8 +1,7 @@
-import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowUpRight, Zap } from 'lucide-react'
-import { supabase } from '../lib/supabase'
 import { useLanguage } from '../lib/i18n.jsx'
+import { useAuth } from '../lib/auth.jsx'
 
 function YoutubeIcon(props) {
   return (
@@ -27,36 +26,7 @@ const SOCIALS = [
 
 export default function Footer() {
   const { lang, t } = useLanguage()
-  const [isAdmin, setIsAdmin] = useState(false)
-
-  useEffect(() => {
-    checkAdminAccess()
-
-    const { data: listener } = supabase.auth.onAuthStateChange(() => {
-      checkAdminAccess()
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [])
-
-  const checkAdminAccess = async () => {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
-
-    if (!session) {
-      setIsAdmin(false)
-      return
-    }
-
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('id', session.user.id)
-      .single()
-
-    setIsAdmin(!error && profile?.role === 'admin')
-  }
+  const { isAdmin } = useAuth()
 
   return (
     <footer className="py-12 bg-slate-900 dark:bg-black text-white font-ibm relative overflow-hidden border-t border-slate-800 dark:border-yellow-400/30">
