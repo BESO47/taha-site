@@ -6,7 +6,7 @@ import { LanguageProvider } from './lib/i18n.jsx'
 import Navbar from './components/Navbar.jsx'
 import Footer from './components/Footer.jsx'
 import WhatsAppButton from './components/WhatsAppButton.jsx'
-import FloatingMathBg from './components/FloatingMathBg.jsx'
+import FloatingPhysicsBg from './components/FloatingPhysicsBg.jsx'
 import ProtectedAdminRoute from './components/ProtectedAdminRoute.jsx'
 
 import HomePage from './pages/HomePage.jsx'
@@ -121,7 +121,7 @@ export default function App() {
       <BrowserRouter>
         <ScrollToTop />
         <div className="flex flex-col justify-between h-full w-full relative min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-zinc-100 smooth font-ibm selection:bg-yellow-400 selection:text-black">
-          <FloatingMathBg />
+          <FloatingPhysicsBg />
           <Navbar />
           <AnimatedRoutes />
           <Footer />

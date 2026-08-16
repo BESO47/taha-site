@@ -36,7 +36,7 @@ import {
 
 const EMPTY_LESSON = {
   title: '',
-  yearId: '3',
+  yearId: '5',
   semester: 1,
   branch: 'الكهربية والمغناطيسية',
   unit: 'الوحدة الأولى',
@@ -49,7 +49,7 @@ const EMPTY_LESSON = {
 
 const EMPTY_EXAM = {
   title: '',
-  yearId: '3',
+  yearId: '5',
   governorate: 'القاهرة',
   yearNum: '2024',
   semester: 1,
@@ -298,10 +298,10 @@ export default function AdminDashboardPage() {
           </div>
           <div>
             <h1 className="text-2xl font-bold font-messiri text-gray-900 dark:text-white">
-              لوحة إدارة منصة مستر إسلام
+              لوحة إدارة منصة فيزكس هاب - م. طه الصباغ
             </h1>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              إدارة الدروس والفيديوهات، امتحانات السنين السابقة، وقاعدة بيانات الطلاب
+              إدارة دروس الفيزياء والفيديوهات، امتحانات السنين السابقة، وقاعدة بيانات الطلاب
             </p>
           </div>
         </div>
@@ -453,7 +453,7 @@ export default function AdminDashboardPage() {
                     <input
                       type="text"
                       required
-                      placeholder="مثال: درس (1) حاصل الضرب الديكارتي"
+                      placeholder="مثال: درس (1) قانون أوم والمقاومة الكهربية"
                       value={newLesson.title}
                       onChange={(e) => setNewLesson({ ...newLesson, title: e.target.value })}
                       className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-sm"
@@ -479,12 +479,12 @@ export default function AdminDashboardPage() {
 
                   <div>
                     <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1">
-                      الفرع (مثلاً: الجبر، الهندسة، الإحصاء...)
+                      الفرع (مثلاً: الكهربية والمغناطيسية، ميكانيكا الموائع، الفيزياء الحديثة...)
                     </label>
                     <input
                       type="text"
                       required
-                      placeholder="الجبر والإحصاء"
+                      placeholder="الكهربية والمغناطيسية"
                       value={newLesson.branch}
                       onChange={(e) => setNewLesson({ ...newLesson, branch: e.target.value })}
                       className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-sm"
@@ -618,7 +618,7 @@ export default function AdminDashboardPage() {
                     <input
                       type="text"
                       required
-                      placeholder="امتحان محافظة القاهرة 2024 - جبر وإحصاء"
+                      placeholder="امتحان محافظة القاهرة 2024 - فيزياء"
                       value={newExam.title}
                       onChange={(e) => setNewExam({ ...newExam, title: e.target.value })}
                       className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-900 text-sm"

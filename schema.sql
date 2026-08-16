@@ -1,5 +1,6 @@
 -- =============================================
--- Supabase Database Schema for Mostafa Hossam Math Platform
+-- Supabase Database Schema for Physics Hub - Eng Taha Elsabagh
+-- physics بطريقه مختلفه
 -- =============================================
 
 -- 1. Create Profiles / Students Table
@@ -53,6 +54,6 @@ CREATE TABLE IF NOT EXISTS public.past_exams (
 -- 4. Sample Initial Data Insert (Optional)
 INSERT INTO public.lessons (year_id, semester, branch, unit, title, duration, views, video_url, is_free, summary_pdf_name, description)
 VALUES 
-  ('3', 1, 'الجبر والإحصاء', 'الوحدة الأولى: العلاقات والدوال', 'درس (1): حاصل الضرب الديكارتي للمجموعات', '45 دقيقة', '12.4K', 'https://www.youtube.com/embed/dQw4w9WgXcQ', true, 'ملخص_حاصل_الضرب_الديكارتي.pdf', 'شرح مفصل لمفهوم حاصل الضرب الديكارتي مع أمثلة محلولة تدريجية.'),
-  ('7', 1, 'الجبر الخطي', 'الوحدة الأولى: المصفوفات', 'درس (1): مقدمة في البرمجة والمصفوفات', '55 دقيقة', '8.9K', 'https://www.youtube.com/embed/dQw4w9WgXcQ', true, 'ملخص_المصفوفات.pdf', 'مقدمة في المصفوفات والعمليات عليها لمسار الهندسة وعلوم الحاسب.')
+  ('5', 1, 'ميكانيكا الموائع', 'الوحدة الأولى: خواص الموائع الساكنة', 'درس (1): الضغط والكثافة وقاعدة باسكال', '45 دقيقة', '12.4K', 'https://www.youtube.com/embed/dQw4w9WgXcQ', true, 'ملخص_الضغط_وقاعدة_باسكال.pdf', 'شرح مبسط لمفهوم الضغط في الموائع الساكنة وقاعدة باسكال مع أمثلة وتطبيقات محلولة تدريجياً.'),
+  ('6', 1, 'الكهربية والمغناطيسية', 'الوحدة الأولى: التيار الكهربي', 'درس (1): قانون أوم والمقاومة الكهربية', '55 دقيقة', '8.9K', 'https://www.youtube.com/embed/dQw4w9WgXcQ', true, 'ملخص_قانون_أوم.pdf', 'مقدمة في التيار الكهربي وقانون أوم وحساب المقاومة المكافئة للتوصيل على التوالي والتوازي.')
 ON CONFLICT DO NOTHING;

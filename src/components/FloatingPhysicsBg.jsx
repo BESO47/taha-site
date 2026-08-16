@@ -20,7 +20,7 @@ const PHYSICS_SYMBOLS = [
   'a=Δv/t',
 ]
 
-export default function FloatingMathBg() {
+export default function FloatingPhysicsBg() {
   const items = useMemo(() => {
     return Array.from({ length: 24 }).map((_, i) => ({
       id: i,
