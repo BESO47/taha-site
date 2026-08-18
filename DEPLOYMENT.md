@@ -12,7 +12,8 @@ The site is a Vite single-page application backed by Supabase. Vercel builds the
 
 1. Open **Supabase Dashboard → SQL Editor → New query**.
 2. Copy all of [`schema.sql`](./schema.sql), paste it into the query, and select **Run**. The script is idempotent, so it can also update an existing installation.
-3. In **Project Settings → API**, copy:
+3. For the bulk WhatsApp messaging feature (latest quiz score / homework / attendance per student), also run [`bulk-messaging.sql`](./bulk-messaging.sql) once. It adds the `bulk_messaging_report` and `student_progress_log` RPCs; the UI falls back to assembling the same data client-side if the RPC is not deployed.
+4. In **Project Settings → API**, copy:
    - the project URL;
    - the public `anon` key (called the publishable key in newer Supabase projects).
 

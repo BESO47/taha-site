@@ -345,3 +345,108 @@ export async function updateOwnProfile(id, payload) {
   if (error) throw error
   return data?.[0]
 }
+
+// =====================================================================
+// BULK WHATSAPP MESSAGING REPORT
+// =====================================================================
+// Preferred path: the `bulk_messaging_report` RPC (bulk-messaging.sql)
+// returns one row per student with the LATEST quiz score, homework grade
+// and attendance session plus overall attendance — all in a single call.
+//
+// Fallback path: if that function hasn't been deployed yet, we assemble
+// the exact same shape from the existing tables (fetchStudents +
+// student_analytics view + per-student latest records).
+// =====================================================================
+
+/** Normalise the RPC row or the fallback row into one consistent shape. */
+function normalizeReportRow(r) {
+  return {
+    student_id: r.student_id,
+    full_name: r.full_name,
+    phone: r.phone,
+    parent_phone: r.parent_phone,
+    year_id: r.year_id,
+    is_active: r.is_active,
+    total_sessions: r.total_sessions ?? 0,
+    present_count: r.present_count ?? 0,
+    absent_count: r.absent_count ?? 0,
+    late_count: r.late_count ?? 0,
+    attendance_percent: r.attendance_percent ?? 0,
+    last_session_date: r.last_session_date ?? null,
+    last_session_attendance: r.last_session_attendance ?? null,
+    last_quiz_title: r.last_quiz_title ?? null,
+    last_quiz_date: r.last_quiz_date ?? null,
+    last_quiz_score: r.last_quiz_score ?? null,
+    last_quiz_max: r.last_quiz_max ?? null,
+    last_homework_title: r.last_homework_title ?? null,
+    last_homework_status: r.last_homework_status ?? null,
+    last_homework_score: r.last_homework_score ?? null,
+    last_homework_max: r.last_homework_max ?? null,
+  }
+}
+
+/**
+ * One row per student with the latest quiz / homework / attendance plus
+ * overall stats. Optionally filtered to a single grade (year_id).
+ */
+export async function fetchBulkMessagingReport({ yearId = null } = {}) {
+  // 1) Preferred: the RPC (deployed via bulk-messaging.sql)
+  try {
+    const { data, error } = await supabase.rpc('bulk_messaging_report', {
+      target_year: yearId || null,
+    })
+    if (!error && Array.isArray(data)) {
+      return data.map(normalizeReportRow)
+    }
+    // If the function is missing (error 42883 / PGRST202), fall through.
+  } catch (err) {
+    console.warn('bulk_messaging_report RPC unavailable, falling back to client assembly', err)
+  }
+
+  // 2) Fallback: build the same shape from existing tables.
+  const students = (await fetchStudents()).filter(
+    (s) => !yearId || s.year_id === yearId
+  )
+  const analytics = await fetchStudentAnalytics()
+
+  const rows = await Promise.all(
+    students.map(async (s) => {
+      const [grades, submissions, attendance] = await Promise.all([
+        fetchGradesForStudent(s.id),
+        fetchSubmissionsForStudent(s.id),
+        fetchAttendanceForStudent(s.id),
+      ])
+      const a = analytics.find((x) => x.student_id === s.id) || {}
+
+      const lastQuiz = grades[0]
+      const lastHw = submissions[0]
+      const lastAtt = attendance[0]
+
+      return normalizeReportRow({
+        student_id: s.id,
+        full_name: s.full_name,
+        phone: s.phone,
+        parent_phone: s.parent_phone,
+        year_id: s.year_id,
+        is_active: s.is_active,
+        total_sessions: a.total_sessions,
+        present_count: a.present_count,
+        absent_count: a.absent_count,
+        late_count: a.late_count,
+        attendance_percent: a.attendance_percent,
+        last_session_date: lastAtt?.session_date ?? null,
+        last_session_attendance: lastAtt?.status ?? null,
+        last_quiz_title: lastQuiz?.quizzes?.title ?? null,
+        last_quiz_date: lastQuiz?.quizzes?.quiz_date ?? null,
+        last_quiz_score: lastQuiz?.score ?? null,
+        last_quiz_max: lastQuiz?.quizzes?.max_score ?? null,
+        last_homework_title: lastHw?.assignments?.title ?? null,
+        last_homework_status: lastHw?.status ?? null,
+        last_homework_score: lastHw?.score ?? null,
+        last_homework_max: lastHw?.assignments?.max_score ?? null,
+      })
+    })
+  )
+
+  return rows
+}
