@@ -316,6 +316,10 @@ export const SUPABASE_SQL_SCHEMA = `
 -- submissions   : student answers + teacher score/feedback
 -- attendance    : present / absent / late / excused per session
 
+-- Bulk WhatsApp messaging uses one extra RPC (latest quiz score, homework
+-- grade and attendance per student). Run bulk-messaging.sql from the repo
+-- in the same SQL Editor.
+
 -- Then promote yourself to teacher:
 UPDATE public.profiles SET role = 'admin'
 WHERE id = (SELECT id FROM auth.users WHERE email = 'YOUR_EMAIL_HERE');

@@ -17,6 +17,7 @@ import AssignmentsTab from '../components/admin/AssignmentsTab.jsx'
 import AttendanceTab from '../components/admin/AttendanceTab.jsx'
 import VideosTab from '../components/admin/VideosTab.jsx'
 import LessonsExamsTab from '../components/admin/LessonsExamsTab.jsx'
+import BulkMessagingTab from '../components/admin/BulkMessagingTab.jsx'
 
 export default function AdminDashboardPage() {
   const { t, lang } = useLanguage()
@@ -72,6 +73,7 @@ export default function AdminDashboardPage() {
     { id: 'attendance', label: t('adminAttendance'), icon: CalendarCheck },
     { id: 'videos', label: t('adminVideos'), icon: Video },
     { id: 'content', label: t('navLessons'), icon: BookOpen },
+    { id: 'bulk', label: t('bulkMessaging'), icon: MessageCircle },
   ]
 
   // Aggregate numbers for the overview cards
@@ -201,6 +203,7 @@ export default function AdminDashboardPage() {
           {tab === 'attendance' && <AttendanceTab students={students} />}
           {tab === 'videos' && <VideosTab />}
           {tab === 'content' && <LessonsExamsTab />}
+          {tab === 'bulk' && <BulkMessagingTab />}
         </>
       )}
 
