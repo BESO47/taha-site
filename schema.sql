@@ -267,7 +267,11 @@ CREATE TRIGGER grades_touch_updated_at
   FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();
 
 -- ---------------------------------------------------------------------
--- 7. ASSIGNMENTS + SUBMISSIONS
+-- 7. HOMEWORK ENTRIES + SUBMISSIONS
+--    (Unified "Homework" module — the old standalone Assignments table was
+--     extended to store the merged Assignments + Homework entries:
+--     questions JSONB = [{ id, question, options[4], answer, points }],
+--     total_points   = sum of question points, group_name = optional group)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.assignments (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -284,7 +288,13 @@ CREATE TABLE IF NOT EXISTS public.assignments (
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS assignments_year_id_idx ON public.assignments(year_id);
+-- Unified Homework module columns (added to existing installs too)
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS questions JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS total_points NUMERIC(8,2);
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS group_name TEXT;
+
+CREATE INDEX IF NOT EXISTS assignments_year_id_idx   ON public.assignments(year_id);
+CREATE INDEX IF NOT EXISTS assignments_group_name_idx ON public.assignments(group_name);
 
 DROP TRIGGER IF EXISTS assignments_touch_updated_at ON public.assignments;
 CREATE TRIGGER assignments_touch_updated_at

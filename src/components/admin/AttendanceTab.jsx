@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { CalendarCheck, Loader2, Save, CheckCircle2 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
 import { YEARS } from '../../data/dummyData'
-import { fetchAttendanceByDate, bulkUpsertAttendance } from '../../lib/api'
+import { fetchAttendanceByDate, bulkUpsertAttendance, fetchGroups } from '../../lib/api'
+import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 
 const STATUSES = ['present', 'absent', 'late', 'excused']
 
@@ -17,12 +18,23 @@ export default function AttendanceTab({ students }) {
   const { t, lang } = useLanguage()
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
   const [yearFilter, setYearFilter] = useState('all')
+  const [groupId, setGroupId] = useState(() => getInitialGroupFilter())
+  const [groups, setGroups] = useState([])
+  const selectedGroupName = groups.find((g) => g.id === groupId)?.name || null
   const [marks, setMarks] = useState({})
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [savedMsg, setSavedMsg] = useState('')
 
-  const visible = students.filter((s) => yearFilter === 'all' || s.year_id === yearFilter)
+  useEffect(() => {
+    fetchGroups().then(setGroups).catch(() => {})
+  }, [])
+
+  const visible = students.filter((s) => {
+    const matchYear = yearFilter === 'all' || s.year_id === yearFilter
+    const matchGroup = !selectedGroupName || (s.group_name || '') === selectedGroupName
+    return matchYear && matchGroup
+  })
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -76,7 +88,7 @@ export default function AttendanceTab({ students }) {
           <span>{t('adminAttendance')}</span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div>
             <label className="block text-xs font-bold mb-1.5">{t('sessionDate')}</label>
             <input
@@ -95,6 +107,10 @@ export default function AttendanceTab({ students }) {
                 <option key={y.id} value={y.id}>{lang === 'ar' ? y.titleAr : y.title}</option>
               ))}
             </select>
+          </div>
+          {/* Universal group filter (Feature 3) */}
+          <div>
+            <GroupFilterSelect value={groupId} onChange={setGroupId} groups={groups} label={t('filterByGroup')} />
           </div>
           <div className="flex items-end gap-2">
             <button

@@ -374,7 +374,8 @@ export const SUPABASE_SQL_SCHEMA = `
 -- 5. past_exams            : governorate exam papers
 -- 6. videos                : YouTube library managed from dashboard
 -- 7. quizzes + grades      : quiz definitions & student marks
--- 8. assignments           : general homework tasks & submissions
+-- 8. assignments           : unified Homework entries (questions JSONB,
+--                            total_points, group_name) & submissions
 -- 9. attendance            : present / absent / late / excused log
 -- 10. whatsapp_logs        : bulk WhatsApp delivery logs & statuses
 
