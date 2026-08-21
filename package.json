@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:grading": "node scripts/test-grading.mjs",
+    "gateway:install": "npm --prefix server install",
+    "gateway": "npm --prefix server start",
+    "gateway:mock": "npm --prefix server run mock"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.109.0",

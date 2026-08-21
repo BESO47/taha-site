@@ -1,5 +1,6 @@
 import { supabase, isSupabaseConfigured } from './supabase'
 import { DEFAULT_GROUPS, SAMPLE_STUDENTS, LESSONS } from '../data/dummyData'
+import { gradeSubmissionAgainstKey, summarizeGrades } from './grading'
 
 /**
  * Data access layer for Physics Hub platform.
@@ -111,8 +112,78 @@ export async function updateStudentGroup(studentId, groupName) {
 }
 
 // =====================================================================
-// HOMEWORK SUBMISSIONS & AUTOMATED GRADING SYSTEM
+// HOMEWORK SUBMISSIONS & ANSWER-KEY GRADING SYSTEM
 // =====================================================================
+// Every homework mark on the platform is produced by COMPARING THE
+// STUDENT'S ANSWERS WITH THE TEACHER'S ANSWER KEY (see lib/grading.js).
+// Handing work in is never a grade by itself: an empty or fully wrong
+// paper scores 0%, and the score is weighted by each question's points.
+
+/**
+ * Extra analytics columns created by `homework-grading.sql`.
+ * Older databases may not have them yet, so every write degrades
+ * gracefully to the base columns instead of throwing.
+ */
+const HOMEWORK_GRADE_COLUMNS = [
+  'correct_count', 'incorrect_count', 'unanswered_count',
+  'percentage', 'total_points', 'breakdown', 'auto_graded',
+]
+
+/** True when PostgREST/Postgres rejected the write because a column is missing. */
+function isMissingColumnError(error) {
+  if (!error) return false
+  const code = String(error.code || '')
+  const msg = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`.toLowerCase()
+  return (
+    code === 'PGRST204' || code === '42703' ||
+    msg.includes('could not find') && msg.includes('column') ||
+    msg.includes('does not exist') && msg.includes('column')
+  )
+}
+
+/** Remove the optional analytics columns from a payload. */
+function stripGradeColumns(payload) {
+  const clone = { ...payload }
+  HOMEWORK_GRADE_COLUMNS.forEach((c) => delete clone[c])
+  return clone
+}
+
+/**
+ * Re-shape a `homework_submissions` row (or a localStorage record) into the
+ * grading result the UI renders: score, correct / incorrect counts and the
+ * overall percentage — all derived from the answer key.
+ */
+export function normalizeHomeworkSubmissionRow(row = {}, extra = {}) {
+  const score = Number(row.score ?? row.earnedPoints ?? 0) || 0
+  const totalPoints = Number(row.total_points ?? row.totalPoints ?? 0) || 0
+  const totalQuestions = Number(row.total_questions ?? row.totalQuestions ?? 0) || 0
+  const denominator = totalPoints > 0 ? totalPoints : totalQuestions
+  const correctCount = row.correct_count ?? row.correctCount
+  const incorrectCount = row.incorrect_count ?? row.incorrectCount
+  const percentage = row.percentage != null
+    ? Math.round(Number(row.percentage))
+    : denominator > 0 ? Math.round((score / denominator) * 100) : 0
+
+  return {
+    id: row.id,
+    studentId: row.student_id ?? row.studentId,
+    lessonId: row.lesson_id ?? row.lessonId,
+    answers: row.answers || {},
+    score,
+    earnedPoints: score,
+    totalPoints: denominator,
+    totalQuestions: totalQuestions || denominator,
+    correctCount: correctCount != null ? Number(correctCount) : null,
+    incorrectCount: incorrectCount != null ? Number(incorrectCount) : null,
+    unansweredCount: row.unanswered_count ?? row.unansweredCount ?? null,
+    percentage,
+    breakdown: row.breakdown || row.breakdownItems || [],
+    autoGraded: row.auto_graded ?? row.autoGraded ?? true,
+    submittedAt: row.submitted_at ?? row.submittedAt ?? null,
+    isUnlocked: true,
+    ...extra,
+  }
+}
 
 /**
  * Fetch a student's homework submission for a specific lesson.
@@ -129,18 +200,7 @@ export async function fetchHomeworkSubmission({ lessonId, studentId }) {
         .eq('student_id', studentId)
         .maybeSingle()
 
-      if (!error && data) {
-        return {
-          id: data.id,
-          studentId: data.student_id,
-          lessonId: data.lesson_id,
-          answers: data.answers || {},
-          score: Number(data.score) || 0,
-          totalQuestions: Number(data.total_questions) || 0,
-          submittedAt: data.submitted_at,
-          isUnlocked: true,
-        }
-      }
+      if (!error && data) return normalizeHomeworkSubmissionRow(data)
     } catch (err) {
       console.warn('Failed to fetch homework submission from Supabase:', err)
     }
@@ -150,99 +210,147 @@ export async function fetchHomeworkSubmission({ lessonId, studentId }) {
   try {
     const key = `hw_sub_${lessonId}_${studentId}`
     const raw = localStorage.getItem(key)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      return { ...parsed, isUnlocked: true }
-    }
+    if (raw) return normalizeHomeworkSubmissionRow(JSON.parse(raw))
   } catch (_) {}
 
   return null
 }
 
 /**
- * Submit student's homework answers, automatically grading against model answers.
+ * Mark a set of answers against the answer key WITHOUT persisting anything.
+ * Exposed so the UI (and the admin re-grade tool) can preview a result.
+ */
+export function gradeHomeworkAnswers({ questions = [], modelAnswers = null, answers = {} } = {}) {
+  return gradeSubmissionAgainstKey({ questions, modelAnswers, answers })
+}
+
+/**
+ * Submit a student's lesson homework.
+ *
+ * The submission is marked question-by-question against the answer key
+ * (`lesson.homeworkQuestions[].answer` and/or `lesson.modelAnswers`) and the
+ * resulting score, correct / incorrect counts and percentage are persisted.
+ *
+ * @returns the stored submission + the full per-question breakdown.
  */
 export async function submitHomeworkSubmission({
   lessonId,
   studentId,
   answers = {},
   modelAnswers = {},
+  questions = [],
   totalQuestions = 0,
 }) {
   if (!lessonId || !studentId) {
     throw new Error('Lesson ID and Student ID are required')
   }
 
-  // Grade calculation
-  let calculatedTotal = Number(totalQuestions) || Object.keys(modelAnswers).length || Object.keys(answers).length || 1
-  let correctCount = 0
+  // ---- 1. MARK THE PAPER AGAINST THE ANSWER KEY -----------------------
+  const result = gradeSubmissionAgainstKey({ questions, modelAnswers, answers })
 
-  // Normalize model answers map
-  const normalizedModel = {}
-  if (Array.isArray(modelAnswers)) {
-    modelAnswers.forEach((q, idx) => {
-      const key = String(q.id || idx + 1)
-      normalizedModel[key] = String(q.correctAnswer || q.correct || q.answer || '').trim().toUpperCase()
-    })
-  } else if (typeof modelAnswers === 'object' && modelAnswers !== null) {
-    Object.entries(modelAnswers).forEach(([k, v]) => {
-      normalizedModel[String(k).trim()] = String(v).trim().toUpperCase()
-    })
-  }
-
-  if (Object.keys(normalizedModel).length > 0) {
-    calculatedTotal = Object.keys(normalizedModel).length
-    Object.entries(answers).forEach(([qKey, studentChoice]) => {
-      const cleanKey = String(qKey).trim()
-      const cleanChoice = String(studentChoice || '').trim().toUpperCase()
-      const correctChoice = normalizedModel[cleanKey] || ''
-
-      if (correctChoice && (cleanChoice === correctChoice || cleanChoice.startsWith(correctChoice))) {
-        correctCount += 1
-      }
-    })
-  } else {
-    // If no model answers set, treat all submitted as valid/full score
-    correctCount = Object.keys(answers).length
-    calculatedTotal = Math.max(1, correctCount)
-  }
+  // Keep a sane denominator when the lesson has no key configured yet:
+  // in that case nothing can be marked, so the score stays 0 and the
+  // teacher is expected to publish the key (never a "free" full mark).
+  const questionCount = result.totalQuestions || Number(totalQuestions) || 0
 
   const payload = {
     lesson_id: lessonId,
     student_id: studentId,
     answers,
-    score: correctCount,
-    total_questions: calculatedTotal,
+    score: result.earnedPoints,
+    total_questions: questionCount,
+    total_points: result.totalPoints,
+    correct_count: result.correctCount,
+    incorrect_count: result.incorrectCount,
+    unanswered_count: result.unansweredCount,
+    percentage: result.percentage,
+    breakdown: result.breakdown,
+    auto_graded: result.hasAnswerKey,
     submitted_at: new Date().toISOString(),
   }
 
   let savedSubmission = null
+  let serverResult = null
 
+  // ---- 2. PERSIST (with graceful degradation for older schemas) -------
   if (isSupabaseConfigured()) {
+    // 2a. Preferred path: mark on the server so the answer key stays
+    //     server-side and a student can never post their own score.
     try {
-      const { data, error } = await supabase
+      const { data, error } = await supabase.rpc('grade_lesson_homework', {
+        p_lesson_id: lessonId,
+        p_answers: answers,
+      })
+      if (!error && data) {
+        const r = Array.isArray(data) ? data[0] : data
+        serverResult = {
+          earnedPoints: Number(r.score) || 0,
+          totalPoints: Number(r.total_points) || 0,
+          totalQuestions: Number(r.total_questions) || questionCount,
+          correctCount: Number(r.correct_count) || 0,
+          incorrectCount: Number(r.incorrect_count) || 0,
+          unansweredCount: Number(r.unanswered_count) || 0,
+          percentage: Math.round(Number(r.percentage)) || 0,
+          breakdown: r.breakdown || result.breakdown,
+          hasAnswerKey: Number(r.total_points) > 0,
+        }
+      } else if (error) {
+        throw error
+      }
+    } catch (err) {
+      console.warn(
+        'grade_lesson_homework RPC unavailable (run homework-grading.sql) — ' +
+        'marking on the client instead:', err.message || err
+      )
+    }
+  }
+
+  if (isSupabaseConfigured() && !serverResult) {
+    try {
+      let { data, error } = await supabase
         .from('homework_submissions')
         .upsert(payload, { onConflict: 'lesson_id,student_id' })
         .select()
 
-      if (!error && data?.[0]) {
-        savedSubmission = data[0]
-      } else if (error) {
-        console.warn('Supabase homework submission upsert error:', error)
+      if (error && isMissingColumnError(error)) {
+        console.warn(
+          'homework_submissions is missing the grading columns — run homework-grading.sql. ' +
+          'Falling back to the base columns.'
+        )
+        const legacy = await supabase
+          .from('homework_submissions')
+          .upsert(stripGradeColumns(payload), { onConflict: 'lesson_id,student_id' })
+          .select()
+        data = legacy.data
+        error = legacy.error
       }
+
+      if (!error && data?.[0]) savedSubmission = data[0]
+      else if (error) console.warn('Supabase homework submission upsert error:', error)
     } catch (err) {
       console.warn('Supabase homework submission exception:', err)
     }
   }
 
-  // Save to local storage for instant responsiveness & offline resilience
+  // ---- 3. Mirror locally for instant UI + offline resilience ----------
+  const final = serverResult || result
   const localResult = {
     id: savedSubmission?.id || `sub_${Date.now()}`,
     studentId,
     lessonId,
     answers,
-    score: correctCount,
-    totalQuestions: calculatedTotal,
+    score: final.earnedPoints,
+    earnedPoints: final.earnedPoints,
+    totalPoints: final.totalPoints,
+    totalQuestions: final.totalQuestions || questionCount,
+    correctCount: final.correctCount,
+    incorrectCount: final.incorrectCount,
+    unansweredCount: final.unansweredCount,
+    percentage: final.percentage,
+    breakdown: final.breakdown,
+    autoGraded: final.hasAnswerKey,
+    hasAnswerKey: final.hasAnswerKey,
+    gradedOnServer: Boolean(serverResult),
     submittedAt: payload.submitted_at,
     isUnlocked: true,
   }
@@ -262,6 +370,38 @@ export async function submitHomeworkSubmission({
 }
 
 /**
+ * Re-mark every stored submission of a lesson against the CURRENT answer
+ * key. Used by the teacher after fixing / publishing the model answers.
+ *
+ * @returns {{ updated:number, failed:number, results:Array, stats:object }}
+ */
+export async function regradeLessonSubmissions({ lessonId, questions = [], modelAnswers = {} }) {
+  const rows = await fetchHomeworkSubmissionsForLesson(lessonId)
+  const results = []
+  let updated = 0
+  let failed = 0
+
+  for (const row of rows) {
+    try {
+      const graded = await submitHomeworkSubmission({
+        lessonId,
+        studentId: row.studentId,
+        answers: row.answers || {},
+        modelAnswers,
+        questions,
+      })
+      results.push({ ...graded, studentName: row.studentName })
+      updated++
+    } catch (err) {
+      console.warn('Re-grade failed for student', row.studentId, err)
+      failed++
+    }
+  }
+
+  return { updated, failed, results, stats: summarizeGrades(results) }
+}
+
+/**
  * Fetch all submissions for a specific lesson (Admin statistical table).
  */
 export async function fetchHomeworkSubmissionsForLesson(lessonId) {
@@ -276,21 +416,12 @@ export async function fetchHomeworkSubmissionsForLesson(lessonId) {
         .order('submitted_at', { ascending: false })
 
       if (!error && Array.isArray(data)) {
-        return data.map((d) => ({
-          id: d.id,
-          studentId: d.student_id,
+        return data.map((d) => normalizeHomeworkSubmissionRow(d, {
           studentName: d.profiles?.full_name || 'طالب',
           phone: d.profiles?.phone || '',
           parentPhone: d.profiles?.parent_phone || '',
           groupName: d.profiles?.group_name || 'عام',
           yearId: d.profiles?.year_id || '5',
-          lessonId: d.lesson_id,
-          answers: d.answers || {},
-          score: Number(d.score) || 0,
-          totalQuestions: Number(d.total_questions) || 0,
-          percentage: d.total_questions > 0 ? Math.round((Number(d.score) / Number(d.total_questions)) * 100) : 0,
-          submittedAt: d.submitted_at,
-          isUnlocked: true,
         }))
       }
     } catch (err) {
@@ -306,14 +437,12 @@ export async function fetchHomeworkSubmissionsForLesson(lessonId) {
 
     return matching.map((s) => {
       const st = students.find((x) => x.id === s.studentId)
-      return {
-        ...s,
+      return normalizeHomeworkSubmissionRow(s, {
         studentName: st?.full_name || 'طالب',
         phone: st?.phone || '',
         parentPhone: st?.parent_phone || '',
         groupName: st?.group_name || 'عام',
-        percentage: s.totalQuestions > 0 ? Math.round((s.score / s.totalQuestions) * 100) : 0,
-      }
+      })
     })
   } catch (_) {}
 
@@ -332,21 +461,12 @@ export async function fetchAllHomeworkSubmissions() {
         .order('submitted_at', { ascending: false })
 
       if (!error && Array.isArray(data)) {
-        return data.map((d) => ({
-          id: d.id,
-          studentId: d.student_id,
+        return data.map((d) => normalizeHomeworkSubmissionRow(d, {
           studentName: d.profiles?.full_name || 'طالب',
           phone: d.profiles?.phone || '',
           groupName: d.profiles?.group_name || '',
           yearId: d.profiles?.year_id || '5',
-          lessonId: d.lesson_id,
           lessonTitle: d.lessons?.title || 'درس',
-          answers: d.answers || {},
-          score: Number(d.score) || 0,
-          totalQuestions: Number(d.total_questions) || 0,
-          percentage: d.total_questions > 0 ? Math.round((Number(d.score) / Number(d.total_questions)) * 100) : 0,
-          submittedAt: d.submitted_at,
-          isUnlocked: true,
         }))
       }
     } catch (err) {
@@ -377,19 +497,10 @@ export async function fetchSubmissionsForStudentLessons(studentId) {
         .order('submitted_at', { ascending: false })
 
       if (!error && Array.isArray(data)) {
-        return data.map((d) => ({
-          id: d.id,
-          studentId: d.student_id,
-          lessonId: d.lesson_id,
+        return data.map((d) => normalizeHomeworkSubmissionRow(d, {
           lessonTitle: d.lessons?.title || 'درس',
           branch: d.lessons?.branch || '',
           unit: d.lessons?.unit || '',
-          answers: d.answers || {},
-          score: Number(d.score) || 0,
-          totalQuestions: Number(d.total_questions) || 0,
-          percentage: d.total_questions > 0 ? Math.round((Number(d.score) / Number(d.total_questions)) * 100) : 0,
-          submittedAt: d.submitted_at,
-          isUnlocked: true,
         }))
       }
     } catch (err) {
@@ -775,9 +886,75 @@ export async function deleteHomeworkEntry(id) {
 }
 
 /**
- * Fetch all submissions for a homework entry (assignment).
+ * Extra grading columns on `submissions` (added by homework-grading.sql).
  */
-export async function fetchSubmissionsForAssignment(assignmentId) {
+const SUBMISSION_GRADE_COLUMNS = [
+  'answers', 'correct_count', 'incorrect_count', 'unanswered_count',
+  'percentage', 'total_points', 'breakdown', 'auto_graded',
+]
+
+function stripSubmissionGradeColumns(payload) {
+  const clone = { ...payload }
+  SUBMISSION_GRADE_COLUMNS.forEach((c) => delete clone[c])
+  return clone
+}
+
+/**
+ * Normalize a `submissions` row: keeps the raw snake_case fields (the admin
+ * table still reads them) and adds the answer-key marking breakdown.
+ */
+export function normalizeAssignmentSubmission(row = {}, entry = null) {
+  const questions = entry?.questions || []
+  const answers = row.answers || {}
+  const storedPercentage = row.percentage
+  const hasStoredBreakdown = row.correct_count != null || row.percentage != null
+
+  // Re-derive the breakdown on the fly when the DB has not stored it yet
+  // (older rows / installs that have not run homework-grading.sql).
+  let derived = null
+  if (!hasStoredBreakdown && questions.length && Object.keys(answers).length) {
+    derived = gradeSubmissionAgainstKey({ questions, answers })
+  }
+
+  const totalPoints =
+    Number(row.total_points) ||
+    derived?.totalPoints ||
+    Number(entry?.totalPoints) ||
+    Number(entry?.maxScore) ||
+    0
+
+  const score = row.score == null ? (derived ? derived.earnedPoints : null) : Number(row.score)
+  const percentage = storedPercentage != null
+    ? Math.round(Number(storedPercentage))
+    : derived
+      ? derived.percentage
+      : score != null && totalPoints > 0
+        ? Math.round((score / totalPoints) * 100)
+        : null
+
+  return {
+    ...row,
+    score,
+    answers,
+    correctCount: row.correct_count != null ? Number(row.correct_count) : derived?.correctCount ?? null,
+    incorrectCount: row.incorrect_count != null ? Number(row.incorrect_count) : derived?.incorrectCount ?? null,
+    unansweredCount: row.unanswered_count != null ? Number(row.unanswered_count) : derived?.unansweredCount ?? null,
+    totalPoints,
+    percentage,
+    breakdown: row.breakdown || derived?.breakdown || [],
+    autoGraded: row.auto_graded ?? Boolean(derived),
+    hasAnswers: Object.keys(answers).length > 0,
+  }
+}
+
+/**
+ * Fetch all submissions for a homework entry (assignment), each one marked
+ * against the answer key (correct / incorrect / percentage).
+ *
+ * @param {string} assignmentId
+ * @param {object} [entry] the homework entry — enables on-the-fly marking
+ */
+export async function fetchSubmissionsForAssignment(assignmentId, entry = null) {
   if (isSupabaseConfigured()) {
     try {
       const { data, error } = await supabase
@@ -785,7 +962,7 @@ export async function fetchSubmissionsForAssignment(assignmentId) {
         .select('*, profiles:student_id (id, full_name, phone, parent_phone, group_name, year_id)')
         .eq('assignment_id', assignmentId)
         .order('submitted_at', { ascending: false })
-      if (!error && Array.isArray(data)) return data
+      if (!error && Array.isArray(data)) return data.map((r) => normalizeAssignmentSubmission(r, entry))
       if (error) throw error
     } catch (err) {
       console.warn('fetchSubmissionsForAssignment error:', err)
@@ -795,51 +972,260 @@ export async function fetchSubmissionsForAssignment(assignmentId) {
   // LocalStorage fallback for demo grading
   try {
     const raw = JSON.parse(localStorage.getItem('physics_hub_hw_grades') || '{}')
-    return (raw[String(assignmentId)] || []).map((s) => ({
-      ...s,
-      status: s.status || 'graded',
-      graded_at: s.graded_at || s.submitted_at || new Date().toISOString(),
-    }))
+    return (raw[String(assignmentId)] || []).map((s) =>
+      normalizeAssignmentSubmission(
+        {
+          ...s,
+          status: s.status || 'graded',
+          graded_at: s.graded_at || s.submitted_at || new Date().toISOString(),
+        },
+        entry
+      )
+    )
   } catch (_) {}
 
   return []
 }
 
+/** Persist a submission row locally (demo / offline mode). */
+function saveLocalAssignmentSubmission(assignmentId, payload) {
+  try {
+    const key = String(assignmentId)
+    const raw = JSON.parse(localStorage.getItem('physics_hub_hw_grades') || '{}')
+    const list = (raw[key] || []).filter((s) => s.student_id !== payload.student_id)
+    const row = { id: `hwg_${Date.now()}`, ...payload }
+    list.unshift(row)
+    raw[key] = list
+    localStorage.setItem('physics_hub_hw_grades', JSON.stringify(raw))
+    return row
+  } catch (_) {
+    return { id: `hwg_${Date.now()}`, ...payload }
+  }
+}
+
+/**
+ * Upsert a submission row, transparently retrying without the optional
+ * grading columns when the database has not been migrated yet.
+ */
+async function upsertSubmissionRow(payload) {
+  let { data, error } = await supabase
+    .from('submissions')
+    .upsert(payload, { onConflict: 'assignment_id,student_id' })
+    .select()
+
+  if (error && isMissingColumnError(error)) {
+    console.warn(
+      'submissions is missing the grading columns — run homework-grading.sql to enable ' +
+      'answer-key marking analytics. Falling back to the base columns.'
+    )
+    const legacy = await supabase
+      .from('submissions')
+      .upsert(stripSubmissionGradeColumns(payload), { onConflict: 'assignment_id,student_id' })
+      .select()
+    data = legacy.data
+    error = legacy.error
+  }
+
+  if (error) throw error
+  return data?.[0]
+}
+
+/**
+ * ==================== STUDENT: submit MCQ answers ====================
+ * Marks the paper against the answer key and stores the result.
+ *
+ * When Supabase is configured the authoritative marking happens inside the
+ * `grade_assignment_submission` SQL function (SECURITY DEFINER) so a student
+ * can never post their own score — the key never leaves the server. The
+ * identical JS engine is used for the preview / offline fallback.
+ *
+ * @returns {{ correctCount, incorrectCount, totalQuestions, earnedPoints,
+ *             totalPoints, percentage, breakdown, submission }}
+ */
+export async function submitAssignmentAnswers({
+  assignmentId,
+  studentId,
+  answers = {},
+  questions = [],
+  content = null,
+  fileUrl = null,
+}) {
+  if (!assignmentId || !studentId) throw new Error('Assignment ID and Student ID are required')
+
+  // Local preview of the mark (also the offline result)
+  const local = gradeSubmissionAgainstKey({ questions, answers })
+
+  if (isSupabaseConfigured()) {
+    // 1) Server-side authoritative marking
+    try {
+      const { data, error } = await supabase.rpc('grade_assignment_submission', {
+        p_assignment_id: assignmentId,
+        p_answers: answers,
+        p_content: content,
+        p_file_url: fileUrl,
+      })
+      if (!error && data) {
+        const r = Array.isArray(data) ? data[0] : data
+        return {
+          totalQuestions: Number(r.total_questions ?? local.totalQuestions) || 0,
+          correctCount: Number(r.correct_count ?? local.correctCount) || 0,
+          incorrectCount: Number(r.incorrect_count ?? local.incorrectCount) || 0,
+          unansweredCount: Number(r.unanswered_count ?? local.unansweredCount) || 0,
+          earnedPoints: Number(r.score ?? local.earnedPoints) || 0,
+          totalPoints: Number(r.total_points ?? local.totalPoints) || 0,
+          percentage: Math.round(Number(r.percentage ?? local.percentage)) || 0,
+          breakdown: r.breakdown || local.breakdown,
+          gradedOnServer: true,
+        }
+      }
+      if (error) throw error
+    } catch (err) {
+      console.warn(
+        'grade_assignment_submission RPC unavailable (run homework-grading.sql) — ' +
+        'falling back to client-side marking:', err.message || err
+      )
+    }
+
+    // 2) Fallback: store the answers; score is written when the RLS/trigger
+    //    guard allows it (admin) and re-derived from the key otherwise.
+    try {
+      const row = await upsertSubmissionRow({
+        assignment_id: assignmentId,
+        student_id: studentId,
+        content,
+        file_url: fileUrl,
+        answers,
+        status: 'submitted',
+        submitted_at: new Date().toISOString(),
+      })
+      return { ...local, submission: row, gradedOnServer: false }
+    } catch (err) {
+      console.warn('submitAssignmentAnswers upsert error:', err)
+      throw err
+    }
+  }
+
+  // Offline / demo mode
+  const row = saveLocalAssignmentSubmission(assignmentId, {
+    assignment_id: assignmentId,
+    student_id: studentId,
+    content,
+    file_url: fileUrl,
+    answers,
+    status: local.hasAnswerKey ? 'graded' : 'submitted',
+    score: local.hasAnswerKey ? local.earnedPoints : null,
+    total_points: local.totalPoints,
+    correct_count: local.correctCount,
+    incorrect_count: local.incorrectCount,
+    unanswered_count: local.unansweredCount,
+    percentage: local.percentage,
+    breakdown: local.breakdown,
+    auto_graded: local.hasAnswerKey,
+    submitted_at: new Date().toISOString(),
+    graded_at: local.hasAnswerKey ? new Date().toISOString() : null,
+  })
+  return { ...local, submission: row, gradedOnServer: false }
+}
+
 /**
  * Grade a homework entry submission for a student. Upserts so the teacher
  * can also award a grade to students who have not submitted yet.
- * The saved grade automatically appears in the student's Homework History.
+ *
+ * `score` is optional: when the submission already holds MCQ answers the
+ * mark is recomputed from the answer key instead of being typed by hand.
  */
-export async function upsertHomeworkSubmissionGrade({ assignmentId, studentId, score, feedback }) {
+export async function upsertHomeworkSubmissionGrade({
+  assignmentId,
+  studentId,
+  score,
+  feedback,
+  answers = null,
+  questions = null,
+  grading = null,
+}) {
+  // Derive the mark from the answer key whenever we have answers.
+  const derived = grading || (answers && questions
+    ? gradeSubmissionAgainstKey({ questions, answers })
+    : null)
+
+  const finalScore = score === '' || score === null || score === undefined
+    ? derived ? derived.earnedPoints : null
+    : Number(score)
+
   const payload = {
     assignment_id: assignmentId,
     student_id: studentId,
-    content: null,
     status: 'graded',
-    score: score === '' || score === null || score === undefined ? null : Number(score),
+    score: finalScore,
     feedback: feedback || null,
     graded_at: new Date().toISOString(),
     submitted_at: new Date().toISOString(),
   }
 
-  if (isSupabaseConfigured()) {
-    const { data, error } = await supabase
-      .from('submissions')
-      .upsert(payload, { onConflict: 'assignment_id,student_id' })
-      .select()
-    if (error) throw error
-    return data?.[0]
+  if (answers) payload.answers = answers
+  if (derived) {
+    payload.correct_count = derived.correctCount
+    payload.incorrect_count = derived.incorrectCount
+    payload.unanswered_count = derived.unansweredCount
+    payload.total_points = derived.totalPoints
+    payload.percentage = derived.percentage
+    payload.breakdown = derived.breakdown
+    payload.auto_graded = true
+  } else if (finalScore != null && questions) {
+    const totalPoints = computeHomeworkTotalPoints(questions)
+    payload.total_points = totalPoints || null
+    payload.percentage = totalPoints > 0 ? Math.round((finalScore / totalPoints) * 100) : null
+    payload.auto_graded = false
   }
 
-  try {
-    const key = String(assignmentId)
-    const raw = JSON.parse(localStorage.getItem('physics_hub_hw_grades') || '{}')
-    const list = (raw[key] || []).filter((s) => s.student_id !== studentId)
-    list.unshift({ id: `hwg_${Date.now()}`, ...payload })
-    raw[key] = list
-    localStorage.setItem('physics_hub_hw_grades', JSON.stringify(raw))
-  } catch (_) {}
-  return { id: `hwg_${Date.now()}`, ...payload }
+  if (isSupabaseConfigured()) {
+    return upsertSubmissionRow(payload)
+  }
+
+  return saveLocalAssignmentSubmission(assignmentId, payload)
+}
+
+/**
+ * ============ TEACHER: auto-mark a whole homework entry ==============
+ * Re-marks every stored submission of an assignment against the current
+ * answer key and writes back score / correct / incorrect / percentage.
+ *
+ * @returns {{ graded:number, skipped:number, failed:number, stats:object, rows:Array }}
+ */
+export async function autoGradeAssignmentSubmissions(entry) {
+  if (!entry?.id) throw new Error('A homework entry is required')
+  const questions = entry.questions || []
+  if (!questions.length) throw new Error('This homework entry has no questions / answer key')
+
+  const rows = await fetchSubmissionsForAssignment(entry.id, entry)
+  const results = []
+  let graded = 0
+  let skipped = 0
+  let failed = 0
+
+  for (const row of rows) {
+    const answers = row.answers || {}
+    if (!Object.keys(answers).length) { skipped++; continue }
+
+    const result = gradeSubmissionAgainstKey({ questions, answers })
+    try {
+      await upsertHomeworkSubmissionGrade({
+        assignmentId: entry.id,
+        studentId: row.student_id,
+        feedback: row.feedback || null,
+        answers,
+        questions,
+        grading: result,
+      })
+      results.push({ ...result, studentId: row.student_id, studentName: row.profiles?.full_name })
+      graded++
+    } catch (err) {
+      console.warn('Auto-grade failed for student', row.student_id, err)
+      failed++
+    }
+  }
+
+  return { graded, skipped, failed, rows: results, stats: summarizeGrades(results) }
 }
 
 // =====================================================================
@@ -851,10 +1237,18 @@ export async function fetchSubmissionsForStudent(studentId) {
     try {
       const { data, error } = await supabase
         .from('submissions')
-        .select('*, assignments:assignment_id (title, max_score, due_date)')
+        .select('*, assignments:assignment_id (title, max_score, total_points, questions, due_date)')
         .eq('student_id', studentId)
         .order('submitted_at', { ascending: false })
-      if (!error && data) return data
+      if (!error && data) {
+        return data.map((r) =>
+          normalizeAssignmentSubmission(r, {
+            questions: r.assignments?.questions || [],
+            totalPoints: r.assignments?.total_points,
+            maxScore: r.assignments?.max_score,
+          })
+        )
+      }
       if (error) throw error
     } catch (err) {
       console.warn('fetchSubmissionsForStudent error:', err)
@@ -868,7 +1262,7 @@ export async function fetchSubmissionsForStudent(studentId) {
     Object.entries(raw).forEach(([assignmentId, list]) => {
       list.forEach((s) => {
         if (s.student_id === studentId) {
-          rows.push({ ...s, assignment_id: assignmentId, status: s.status || 'graded' })
+          rows.push(normalizeAssignmentSubmission({ ...s, assignment_id: assignmentId, status: s.status || 'graded' }))
         }
       })
     })
@@ -878,22 +1272,48 @@ export async function fetchSubmissionsForStudent(studentId) {
   return []
 }
 
-export async function submitAssignment({ assignmentId, studentId, content, fileUrl }) {
-  const { data, error } = await supabase
-    .from('submissions')
-    .upsert(
-      {
-        assignment_id: assignmentId,
-        student_id: studentId,
-        content: content || null,
-        file_url: fileUrl || null,
-        status: 'submitted',
-      },
-      { onConflict: 'assignment_id,student_id' }
-    )
-    .select()
-  if (error) throw error
-  return data?.[0]
+/**
+ * Submit a homework entry.
+ *  - MCQ homework  -> `answers` are marked against the answer key.
+ *  - Essay / file  -> stored as `submitted` for manual marking.
+ */
+export async function submitAssignment({
+  assignmentId,
+  studentId,
+  content,
+  fileUrl,
+  answers = null,
+  questions = [],
+}) {
+  if (answers && Object.keys(answers).length) {
+    return submitAssignmentAnswers({
+      assignmentId,
+      studentId,
+      answers,
+      questions,
+      content: content || null,
+      fileUrl: fileUrl || null,
+    })
+  }
+
+  if (!isSupabaseConfigured()) {
+    return saveLocalAssignmentSubmission(assignmentId, {
+      assignment_id: assignmentId,
+      student_id: studentId,
+      content: content || null,
+      file_url: fileUrl || null,
+      status: 'submitted',
+      submitted_at: new Date().toISOString(),
+    })
+  }
+
+  return upsertSubmissionRow({
+    assignment_id: assignmentId,
+    student_id: studentId,
+    content: content || null,
+    file_url: fileUrl || null,
+    status: 'submitted',
+  })
 }
 
 export async function gradeSubmission(id, { score, feedback }) {

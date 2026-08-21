@@ -125,6 +125,7 @@ export default function LessonDetailPage() {
         lessonId: lesson.id,
         studentId: user.id,
         answers: userAnswers,
+        questions: questionsList,
         modelAnswers: lesson.modelAnswers || {},
         totalQuestions: totalQ,
       })
@@ -297,7 +298,7 @@ export default function LessonDetailPage() {
                       {t('homeworkScoreLabel')}
                     </span>
                     <span className="text-lg font-extrabold text-emerald-800 dark:text-emerald-200 font-outfit">
-                      {homeworkSubmission.score} / {homeworkSubmission.totalQuestions} ({homeworkSubmission.totalQuestions > 0 ? Math.round((homeworkSubmission.score / homeworkSubmission.totalQuestions) * 100) : 0}%)
+                      {homeworkSubmission.score} / {homeworkSubmission.totalPoints || homeworkSubmission.totalQuestions} ({homeworkSubmission.percentage ?? 0}%)
                     </span>
                   </div>
 
@@ -407,7 +408,12 @@ export default function LessonDetailPage() {
             <div className="px-5 py-2.5 rounded-2xl bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 font-bold text-sm flex items-center gap-2">
               <Award className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
               <span>
-                {t('yourSubmittedScore')}: {homeworkSubmission.score} / {homeworkSubmission.totalQuestions} ({homeworkSubmission.totalQuestions > 0 ? Math.round((homeworkSubmission.score / homeworkSubmission.totalQuestions) * 100) : 0}%)
+                {t('yourSubmittedScore')}: {homeworkSubmission.score} / {homeworkSubmission.totalPoints || homeworkSubmission.totalQuestions} ({homeworkSubmission.percentage ?? 0}%)
+                {homeworkSubmission.correctCount != null && (
+                  <span className="ms-2 text-xs font-bold">
+                    · ✓ {homeworkSubmission.correctCount} · ✕ {homeworkSubmission.incorrectCount ?? 0}
+                  </span>
+                )}
               </span>
             </div>
           )}

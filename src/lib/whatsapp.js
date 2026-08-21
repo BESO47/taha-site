@@ -10,6 +10,17 @@
  */
 
 import { supabase, isSupabaseConfigured } from './supabase'
+import {
+  isGatewayConfigured,
+  pingGateway,
+  getGatewayStatus,
+  startBulkJob,
+  waitForJob,
+  cancelJob as cancelGatewayJob,
+  pauseJob as pauseGatewayJob,
+  resumeJob as resumeGatewayJob,
+  sendSingleMessage,
+} from './whatsappGateway'
 
 /**
  * Normalizes any phone input into standard international digits-only format.
@@ -487,6 +498,18 @@ export async function dispatchBulkWhatsAppQueue(
   const errors = []
   const logs = []
 
+  // ---------------------------------------------------------------------
+  // BUG FIX: the previous version counted every recipient as "sent" when no
+  // transport was configured — the teacher saw a green summary while nobody
+  // received anything. Refuse to run without a real transport instead.
+  // ---------------------------------------------------------------------
+  if (!isWebhookConfigured()) {
+    throw new Error(
+      'No WhatsApp webhook is configured (VITE_WHATSAPP_WEBHOOK_URL). ' +
+      'Use the WhatsApp gateway (recommended, see WHATSAPP_BULK_SETUP.md) or the manual WhatsApp Web mode.'
+    )
+  }
+
   for (let i = 0; i < total; i++) {
     if (signal?.aborted || controller?.cancelled) {
       console.log('Bulk dispatch aborted by user.')
@@ -549,13 +572,12 @@ export async function dispatchBulkWhatsAppQueue(
     }
 
     try {
-      if (isWebhookConfigured()) {
-        await sendViaWebhook(validation.normalized, item.message, {
-          studentId,
-          studentName,
-          target: recipientType,
-        })
-      }
+      // The dispatch only counts as successful when the provider confirms it.
+      await sendViaWebhook(validation.normalized, item.message, {
+        studentId,
+        studentName,
+        target: recipientType,
+      })
 
       successfulCount++
 
@@ -726,7 +748,16 @@ export async function dispatchWhatsAppLinksSequentially(
     }
 
     try {
-      window.open(url, '_blank', 'noopener,noreferrer')
+      // Browsers only allow ONE popup per user gesture: every window.open
+      // after the first is silently blocked and returns null. Detect it
+      // instead of reporting a fake success.
+      const opened = window.open(url, '_blank', 'noopener,noreferrer')
+      if (!opened) {
+        throw new Error(
+          'Popup blocked by the browser. Allow popups for this site, or use the ' +
+          'WhatsApp gateway for fully automatic sending.'
+        )
+      }
       successfulCount++
 
       await logWhatsAppDispatch({
@@ -839,4 +870,183 @@ export async function sendReport(phone, message, meta = {}) {
     status: 'sent',
   })
   return { via: 'wa.me', success: true }
+}
+
+/* =====================================================================
+ * GATEWAY MODE  (recommended — fully automatic bulk sending)
+ * ---------------------------------------------------------------------
+ * The heavy lifting happens in the Node service under `server/`:
+ * it owns the WhatsApp session (whatsapp-web.js / Meta Cloud API /
+ * relay), paces the queue and retries transient failures. The browser
+ * only creates a job and polls its progress, so closing the dashboard
+ * no longer kills a campaign.
+ * ===================================================================== */
+
+/**
+ * Which transport will actually be used right now?
+ * @returns {Promise<{ mode:'gateway'|'webhook'|'manual', ready:boolean, status:object|null, reason:string }>}
+ */
+export async function resolveTransport() {
+  if (isGatewayConfigured()) {
+    const health = await pingGateway()
+    if (health) {
+      try {
+        const status = await getGatewayStatus()
+        return {
+          mode: 'gateway',
+          ready: Boolean(status.ready),
+          status,
+          reason: status.ready
+            ? `Connected via ${status.provider}`
+            : status.needsScan
+              ? 'Scan the QR code to link WhatsApp'
+              : status.lastError || `Session state: ${status.status}`,
+        }
+      } catch (err) {
+        return { mode: 'gateway', ready: false, status: null, reason: err.message }
+      }
+    }
+  }
+
+  if (isWebhookConfigured()) {
+    return { mode: 'webhook', ready: true, status: null, reason: 'Using VITE_WHATSAPP_WEBHOOK_URL' }
+  }
+
+  return {
+    mode: 'manual',
+    ready: true,
+    status: null,
+    reason: 'No gateway detected — messages open one by one in WhatsApp Web',
+  }
+}
+
+/** Normalize a gateway job into the summary shape the UI already renders. */
+function jobToSummary(job) {
+  const results = job.results || []
+  return {
+    jobId: job.id,
+    status: job.status,
+    total: job.total,
+    sent: job.sent,
+    failed: job.failed,
+    skipped: job.skipped,
+    successfulCount: job.sent,
+    failedCount: job.failed,
+    errors: results
+      .filter((r) => r.status === 'failed')
+      .map((r) => ({ index: r.index + 1, studentName: r.name, phone: r.phone, error: r.error })),
+    logs: results.map((r) => ({
+      studentName: r.name,
+      phone: r.normalizedPhone || r.phone,
+      status: r.status,
+      error: r.error,
+      attempts: r.attempts,
+    })),
+  }
+}
+
+/**
+ * Run a bulk campaign through the gateway.
+ *
+ * @param {Array<{phone,message,studentId?,studentName?,target?,record?}>} messages
+ * @param {object}   options
+ * @param {number}   options.delayMs      base delay between messages
+ * @param {number}   options.jitterMs     random extra delay
+ * @param {boolean}  options.dryRun       validate & rehearse without sending
+ * @param {Function} options.onProgress   ({ current, total, percent, ... })
+ * @param {Function} options.onJob        receives the job id as soon as it exists
+ * @param {AbortSignal} options.signal    stop polling
+ */
+export async function dispatchBulkViaGateway(
+  messages = [],
+  { delayMs = 4000, jitterMs = 2000, dryRun = false, onProgress = null, onJob = null, signal = null } = {}
+) {
+  if (!messages.length) throw new Error('No recipients selected')
+
+  const job = await startBulkJob(messages, { delayMs, jitterMs, dryRun })
+  onJob?.(job)
+
+  const finished = await waitForJob(job.id, {
+    signal,
+    onProgress: (j) => {
+      const idx = j.current?.index ?? Math.max(0, j.processed - 1)
+      onProgress?.({
+        jobId: j.id,
+        current: Math.min(j.processed + (j.current ? 1 : 0), j.total),
+        total: j.total,
+        percent: j.percent,
+        studentName: j.current?.name || '',
+        phone: j.current?.phone || '',
+        currentStatus:
+          j.status === 'paused' ? 'paused'
+            : j.current?.status === 'waiting' ? 'waiting_delay'
+              : j.current?.status === 'batch_pause' ? 'batch_pause'
+                : j.current?.status || j.status,
+        successfulCount: j.sent,
+        failedCount: j.failed,
+        index: idx,
+      })
+    },
+  })
+
+  // Mirror the outcome into whatsapp_logs so the History modal stays useful.
+  for (const r of finished.results || []) {
+    await logWhatsAppDispatch({
+      studentId: r.studentId || null,
+      phone: r.normalizedPhone || r.phone,
+      recipientName: r.name,
+      recipientType: r.recipientType || 'student',
+      messageBody: messages[r.index]?.message || '',
+      status: r.status === 'sent' ? 'sent' : 'failed',
+      errorMessage: r.error || null,
+    })
+  }
+
+  return jobToSummary(finished)
+}
+
+/** Pause / resume / cancel a running gateway campaign. */
+export const gatewayControls = {
+  pause: (jobId) => pauseGatewayJob(jobId),
+  resume: (jobId) => resumeGatewayJob(jobId),
+  cancel: (jobId) => cancelGatewayJob(jobId),
+}
+
+/**
+ * Send a single message through the best available transport.
+ * Order: gateway -> webhook -> wa.me deep link.
+ */
+export async function sendMessageSmart(phone, message, meta = {}) {
+  const validation = validatePhone(phone)
+  if (!validation.isValid) throw new Error(validation.error || 'Invalid phone number')
+
+  const transport = await resolveTransport()
+
+  if (transport.mode === 'gateway' && transport.ready) {
+    try {
+      const res = await sendSingleMessage({ phone: validation.normalized, message, meta })
+      await logWhatsAppDispatch({
+        studentId: meta.studentId || null,
+        phone: validation.normalized,
+        recipientName: meta.studentName || '',
+        recipientType: meta.target || 'student',
+        messageBody: message,
+        status: 'sent',
+      })
+      return { via: 'gateway', success: true, messageId: res.id }
+    } catch (err) {
+      await logWhatsAppDispatch({
+        studentId: meta.studentId || null,
+        phone: validation.normalized,
+        recipientName: meta.studentName || '',
+        recipientType: meta.target || 'student',
+        messageBody: message,
+        status: 'failed',
+        errorMessage: err.message,
+      })
+      throw err
+    }
+  }
+
+  return sendReport(validation.normalized, message, meta)
 }

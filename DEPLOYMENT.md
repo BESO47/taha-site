@@ -13,7 +13,8 @@ The site is a Vite single-page application backed by Supabase. Vercel builds the
 1. Open **Supabase Dashboard → SQL Editor → New query**.
 2. Copy all of [`schema.sql`](./schema.sql), paste it into the query, and select **Run**. The script is idempotent, so it can also update an existing installation.
 3. For the bulk WhatsApp messaging feature (latest quiz score / homework / attendance per student), also run [`bulk-messaging.sql`](./bulk-messaging.sql) once. It adds the `bulk_messaging_report` and `student_progress_log` RPCs; the UI falls back to assembling the same data client-side if the RPC is not deployed.
-4. In **Project Settings → API**, copy:
+4. Run [`homework-grading.sql`](./homework-grading.sql) once. It adds the answer-key marking columns (`correct_count`, `incorrect_count`, `percentage`, `breakdown`, …) plus the `grade_assignment_submission` / `grade_lesson_homework` RPCs that mark submissions server-side. See [`HOMEWORK_GRADING.md`](./HOMEWORK_GRADING.md). Until it is applied the app still works, marking answers in the browser instead.
+5. In **Project Settings → API**, copy:
    - the project URL;
    - the public `anon` key (called the publishable key in newer Supabase projects).
 
@@ -42,7 +43,19 @@ If the database was initialized with an older `schema.sql` and promotion silentl
 | --- | --- | --- |
 | `VITE_SUPABASE_URL` | Yes | Supabase project URL, such as `https://abc.supabase.co` |
 | `VITE_SUPABASE_ANON_KEY` | Yes | Supabase public anon/publishable key |
-| `VITE_WHATSAPP_WEBHOOK_URL` | No | HTTPS endpoint for automated WhatsApp delivery; omit to use `wa.me` links |
+| `VITE_WHATSAPP_WEBHOOK_URL` | No | Legacy direct relay endpoint; prefer the gateway below |
+| `VITE_WHATSAPP_GATEWAY_URL` | No | Public URL of the bulk WhatsApp gateway, e.g. `https://wa.yourdomain.com/api/whatsapp` |
+| `VITE_WHATSAPP_API_KEY` | No | Must match `WA_API_KEY` on the gateway |
+
+### Bulk WhatsApp
+
+Bulk messaging runs through the Node gateway in [`server/`](./server), which must be
+hosted on a machine that stays awake (a small VPS with PM2 or Docker) — serverless
+functions cannot keep a WhatsApp session alive. Full instructions:
+[`WHATSAPP_BULK_SETUP.md`](./WHATSAPP_BULK_SETUP.md).
+
+Locally, `npm run gateway` + `npm run dev` is all you need: Vite proxies
+`/api/whatsapp` to `http://127.0.0.1:4000`.
 
 Add the required variables to Production and Preview (and Development if desired), then deploy. Redeploy after changing any `VITE_` variable because Vite embeds values at build time.
 

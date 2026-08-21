@@ -12,6 +12,23 @@ import { YEARS } from '../data/dummyData'
 import { fetchLessonsFromSupabase } from '../lib/supabase'
 import { fetchHomeworkSubmission, submitHomeworkSubmission, fetchSubmissionsForStudentLessons } from '../lib/api'
 
+/**
+ * Placeholder answer sheet used when a lesson has no homework questions
+ * configured yet. It carries its own answer key so the marker always has
+ * something to compare the student's answers against.
+ */
+const DEFAULT_HOMEWORK_QUESTIONS = [1, 2, 3, 4, 5].map((n) => ({
+  id: String(n),
+  question: `السؤال ${n}: اختر رمز الإجابة الصحيحة:`,
+  options: ['A) الخيار الأول', 'B) الخيار الثاني', 'C) الخيار الثالث', 'D) الخيار الرابع'],
+  correctAnswer: ['A', 'B', 'C', 'A', 'B'][n - 1],
+  points: 1,
+}))
+
+/** The questions actually shown / marked for a lesson. */
+const questionsOf = (lesson) =>
+  lesson?.homeworkQuestions?.length ? lesson.homeworkQuestions : DEFAULT_HOMEWORK_QUESTIONS
+
 export default function HomeworkPage() {
   const { t, lang } = useLanguage()
   const { user, profile, isAdmin } = useAuth()
@@ -88,7 +105,7 @@ export default function HomeworkPage() {
     e.preventDefault()
     if (!activeLesson || !user?.id) return
 
-    const questions = activeLesson.homeworkQuestions || []
+    const questions = questionsOf(activeLesson)
     const totalQ = questions.length || Object.keys(activeLesson.modelAnswers || {}).length || 5
 
     // Validate that at least one answer is selected
@@ -103,6 +120,7 @@ export default function HomeworkPage() {
         lessonId: activeLesson.id,
         studentId: user.id,
         answers: userAnswers,
+        questions,
         modelAnswers: activeLesson.modelAnswers || {},
         totalQuestions: totalQ,
       })
@@ -263,16 +281,28 @@ export default function HomeworkPage() {
                     </h3>
                   </div>
 
-                  {/* Homework Score Banner if submitted */}
+                  {/* Homework Score Banner if submitted — marked against the answer key */}
                   {sub && (
-                    <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/80 flex items-center justify-between text-xs font-bold text-emerald-800 dark:text-emerald-300">
-                      <div className="flex items-center gap-1.5">
-                        <Award className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                        <span>{t('yourSubmittedScore')}:</span>
+                    <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/80 space-y-2 text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <Award className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                          <span>{t('yourSubmittedScore')}:</span>
+                        </div>
+                        <span className="font-mono text-sm px-2.5 py-0.5 rounded-lg bg-emerald-200/50 dark:bg-emerald-900/60">
+                          {sub.score} / {sub.totalPoints || sub.totalQuestions} ({sub.percentage ?? 0}%)
+                        </span>
                       </div>
-                      <span className="font-mono text-sm px-2.5 py-0.5 rounded-lg bg-emerald-200/50 dark:bg-emerald-900/60">
-                        {sub.score} / {sub.totalQuestions} ({sub.totalQuestions > 0 ? Math.round((sub.score / sub.totalQuestions) * 100) : 0}%)
-                      </span>
+                      {sub.correctCount != null && (
+                        <div className="flex items-center gap-2 flex-wrap text-[11px]">
+                          <span className="px-2 py-0.5 rounded-lg bg-emerald-200/60 dark:bg-emerald-900/60">
+                            ✓ {t('correctAnswersLabel')}: {sub.correctCount}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-lg bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300">
+                            ✕ {t('incorrectAnswersLabel')}: {sub.incorrectCount ?? 0}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -368,9 +398,52 @@ export default function HomeworkPage() {
                   <div className="inline-block px-6 py-3 rounded-2xl bg-white dark:bg-zinc-900 border border-emerald-300 dark:border-emerald-700 shadow-md">
                     <div className="text-xs font-bold text-slate-500">{t('homeworkScoreLabel')}</div>
                     <div className="text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 font-outfit">
-                      {submitResult.score} / {submitResult.totalQuestions} ({Math.round((submitResult.score / submitResult.totalQuestions) * 100)}%)
+                      {submitResult.score} / {submitResult.totalPoints || submitResult.totalQuestions} ({submitResult.percentage ?? 0}%)
                     </div>
                   </div>
+
+                  {/* Correct / incorrect breakdown — computed by comparing
+                      every answer with the teacher's answer key. */}
+                  <div className="grid grid-cols-3 gap-2 max-w-md mx-auto">
+                    <div className="p-3 rounded-2xl bg-white dark:bg-zinc-900 border border-emerald-200 dark:border-emerald-800">
+                      <div className="text-[11px] font-bold text-slate-500">{t('correctAnswersLabel')}</div>
+                      <div className="text-xl font-extrabold text-emerald-600 dark:text-emerald-400">{submitResult.correctCount ?? 0}</div>
+                    </div>
+                    <div className="p-3 rounded-2xl bg-white dark:bg-zinc-900 border border-red-200 dark:border-red-900">
+                      <div className="text-[11px] font-bold text-slate-500">{t('incorrectAnswersLabel')}</div>
+                      <div className="text-xl font-extrabold text-red-600 dark:text-red-400">{submitResult.incorrectCount ?? 0}</div>
+                    </div>
+                    <div className="p-3 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
+                      <div className="text-[11px] font-bold text-slate-500">{t('percentageLabel')}</div>
+                      <div className="text-xl font-extrabold text-slate-800 dark:text-white">{submitResult.percentage ?? 0}%</div>
+                    </div>
+                  </div>
+
+                  {/* Per-question review */}
+                  {Array.isArray(submitResult.breakdown) && submitResult.breakdown.length > 0 && (
+                    <div className="text-start space-y-2 max-h-64 overflow-y-auto">
+                      <p className="text-xs font-bold text-slate-500">{t('answerReviewTitle')}</p>
+                      {submitResult.breakdown.map((b) => (
+                        <div
+                          key={b.questionId || b.number}
+                          className={`p-3 rounded-xl border text-xs font-bold flex items-center justify-between gap-3 ${
+                            b.isCorrect
+                              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                              : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900 text-red-800 dark:text-red-300'
+                          }`}
+                        >
+                          <span className="truncate">
+                            {b.number}. {b.question || ''}
+                          </span>
+                          <span className="font-mono shrink-0">
+                            {b.isCorrect
+                              ? `✓ ${b.studentLetter || b.studentAnswer}`
+                              : `✕ ${b.studentLetter || b.studentAnswer || '—'} → ${b.correctAnswer || b.correctLetter || '—'}`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
                     <Link
@@ -398,41 +471,7 @@ export default function HomeworkPage() {
 
                   {/* Questions List */}
                   <div className="space-y-5">
-                    {(activeLesson.homeworkQuestions && activeLesson.homeworkQuestions.length > 0
-                      ? activeLesson.homeworkQuestions
-                      : [
-                          {
-                            id: '1',
-                            question: 'السؤال الأول في واجب هذا الدرس: اختر الإجابة الصحيحة:',
-                            options: ['A) الخيار الأول', 'B) الخيار الثاني', 'C) الخيار الثالث', 'D) الخيار الرابع'],
-                            correctAnswer: 'A',
-                          },
-                          {
-                            id: '2',
-                            question: 'السؤال الثاني: اختر رمز الإجابة الصحيحة:',
-                            options: ['A) الخيار الأول', 'B) الخيار الثاني', 'C) الخيار الثالث', 'D) الخيار الرابع'],
-                            correctAnswer: 'B',
-                          },
-                          {
-                            id: '3',
-                            question: 'السؤال الثالث: اختر رمز الإجابة الصحيحة:',
-                            options: ['A) الخيار الأول', 'B) الخيار الثاني', 'C) الخيار الثالث', 'D) الخيار الرابع'],
-                            correctAnswer: 'C',
-                          },
-                          {
-                            id: '4',
-                            question: 'السؤال الرابع: اختر رمز الإجابة الصحيحة:',
-                            options: ['A) الخيار الأول', 'B) الخيار الثاني', 'C) الخيار الثالث', 'D) الخيار الرابع'],
-                            correctAnswer: 'A',
-                          },
-                          {
-                            id: '5',
-                            question: 'السؤال الخامس: اختر رمز الإجابة الصحيحة:',
-                            options: ['A) الخيار الأول', 'B) الخيار الثاني', 'C) الخيار الثالث', 'D) الخيار الرابع'],
-                            correctAnswer: 'B',
-                          },
-                        ]
-                    ).map((q, idx) => {
+                    {questionsOf(activeLesson).map((q, idx) => {
                       const qKey = String(q.id || idx + 1)
                       const selectedChoice = userAnswers[qKey]
 

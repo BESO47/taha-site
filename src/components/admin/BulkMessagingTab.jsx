@@ -3,7 +3,7 @@ import {
   MessageCircle, Users, Loader2, Send, Copy, Check, ExternalLink,
   Filter, CheckSquare, Square, PhoneOff, Clock, ShieldCheck,
   AlertTriangle, History, RefreshCw, X, FileText, CheckCircle2, XCircle,
-  Pause, Play, Ban
+  Pause, Play, Ban, QrCode, Wifi, WifiOff, LogOut, Zap, FlaskConical
 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
 import { YEARS } from '../../data/dummyData'
@@ -12,12 +12,20 @@ import {
   isWebhookConfigured,
   dispatchBulkWhatsAppQueue,
   dispatchWhatsAppLinksSequentially,
+  dispatchBulkViaGateway,
+  gatewayControls,
+  resolveTransport,
   createQueueController,
   fetchWhatsAppLogs,
   validatePhone,
   normalizePhone,
   formatPhoneWithPlus
 } from '../../lib/whatsapp'
+import {
+  getGatewayStatus,
+  startSession as startGatewaySession,
+  stopSession as stopGatewaySession,
+} from '../../lib/whatsappGateway'
 import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 import {
   TEMPLATE_VARIABLES,
@@ -106,6 +114,14 @@ export default function BulkMessagingTab() {
   const [review, setReview] = useState(null)
   const [copied, setCopied] = useState(false)
 
+  // Gateway (server-side WhatsApp session) state
+  const [transport, setTransport] = useState(null)     // { mode, ready, reason, status }
+  const [gatewayBusy, setGatewayBusy] = useState(false)
+  const [gatewayError, setGatewayError] = useState('')
+  const [activeJobId, setActiveJobId] = useState(null)
+  const [dryRun, setDryRun] = useState(false)
+  const pollRef = useRef(null)
+
   // Logs History Modal State
   const [showLogsModal, setShowLogsModal] = useState(false)
   const [logsList, setLogsList] = useState([])
@@ -138,6 +154,81 @@ export default function BulkMessagingTab() {
       setTemplate(lang === 'ar' ? DEFAULT_TEMPLATE_AR : DEFAULT_TEMPLATE_EN)
     }
   }, [lang, edited])
+
+  /* ------------------------------------------------------------------ */
+  /* WhatsApp gateway: detect the transport and follow the session state */
+  /* ------------------------------------------------------------------ */
+  const refreshTransport = useCallback(async () => {
+    try {
+      const info = await resolveTransport()
+      setTransport(info)
+      setGatewayError('')
+      return info
+    } catch (err) {
+      setGatewayError(err.message)
+      return null
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshTransport()
+  }, [refreshTransport])
+
+  // While a QR is pending (or the session is connecting) poll the status so
+  // the code refreshes and the UI flips to "connected" automatically.
+  useEffect(() => {
+    const needsPolling =
+      transport?.mode === 'gateway' &&
+      !transport?.ready &&
+      ['qr', 'starting', 'authenticated', 'disconnected'].includes(transport?.status?.status)
+
+    if (!needsPolling) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      return undefined
+    }
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await getGatewayStatus()
+        setTransport((prev) => ({
+          mode: 'gateway',
+          ready: Boolean(status.ready),
+          status,
+          reason: status.ready ? `Connected via ${status.provider}` : prev?.reason || '',
+        }))
+      } catch (_) {}
+    }, 3000)
+
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    }
+  }, [transport?.mode, transport?.ready, transport?.status?.status])
+
+  const handleConnectGateway = async () => {
+    setGatewayBusy(true)
+    setGatewayError('')
+    try {
+      const status = await startGatewaySession()
+      setTransport({ mode: 'gateway', ready: Boolean(status.ready), status, reason: status.lastError || '' })
+    } catch (err) {
+      setGatewayError(err.message)
+    } finally {
+      setGatewayBusy(false)
+    }
+  }
+
+  const handleDisconnectGateway = async (logout = false) => {
+    setGatewayBusy(true)
+    setGatewayError('')
+    try {
+      const status = await stopGatewaySession({ logout })
+      setTransport({ mode: 'gateway', ready: false, status, reason: 'Session stopped' })
+    } catch (err) {
+      setGatewayError(err.message)
+    } finally {
+      setGatewayBusy(false)
+    }
+  }
 
   const phoneFor = (r) => (recipient === 'parent' ? r.parent_phone || r.phone : r.phone)
 
@@ -234,6 +325,10 @@ export default function BulkMessagingTab() {
   }
 
   const handleCancelDispatch = () => {
+    if (activeJobId) {
+      gatewayControls.cancel(activeJobId).catch((err) => setGatewayError(err.message))
+      return
+    }
     if (abortControllerRef.current) abortControllerRef.current.abort()
     if (queueControllerRef.current) queueControllerRef.current.cancel()
     setIsDispatching(false)
@@ -242,11 +337,21 @@ export default function BulkMessagingTab() {
   }
 
   const handlePauseDispatch = () => {
+    if (activeJobId) {
+      gatewayControls.pause(activeJobId).catch((err) => setGatewayError(err.message))
+      setProgressState((prev) => (prev ? { ...prev, currentStatus: 'paused' } : prev))
+      return
+    }
     queueControllerRef.current?.pause()
     setProgressState((prev) => (prev ? { ...prev, currentStatus: 'paused' } : prev))
   }
 
   const handleResumeDispatch = () => {
+    if (activeJobId) {
+      gatewayControls.resume(activeJobId).catch((err) => setGatewayError(err.message))
+      setProgressState((prev) => (prev ? { ...prev, currentStatus: 'resuming' } : prev))
+      return
+    }
     queueControllerRef.current?.resume()
     setProgressState((prev) => (prev ? { ...prev, currentStatus: 'resuming' } : prev))
   }
@@ -266,7 +371,39 @@ export default function BulkMessagingTab() {
       alert(t('noSelection'))
       return
     }
-    if (isWebhookConfigured()) {
+
+    const info = transport?.mode ? transport : await refreshTransport()
+
+    // ---------------- 1) Gateway (fully automatic) ----------------
+    if (info?.mode === 'gateway') {
+      if (!info.ready) {
+        setGatewayError(info.reason || 'The WhatsApp session is not connected yet.')
+        return
+      }
+      setIsDispatching(true)
+      setGatewayError('')
+      try {
+        const result = await dispatchBulkViaGateway(messages, {
+          delayMs: delaySec * 1000,
+          jitterMs: 2000,
+          dryRun,
+          onJob: (job) => setActiveJobId(job.id),
+          onProgress: (prog) => setProgressState(prog),
+        })
+        setDispatchSummary(result)
+      } catch (err) {
+        console.error('Gateway dispatch error:', err)
+        setGatewayError(err.message)
+      } finally {
+        setIsDispatching(false)
+        setProgressState(null)
+        setActiveJobId(null)
+      }
+      return
+    }
+
+    // ---------------- 2) Direct webhook ----------------
+    if (info?.mode === 'webhook' || isWebhookConfigured()) {
       setIsDispatching(true)
       queueControllerRef.current = createQueueController()
       abortControllerRef.current = new AbortController()
@@ -370,6 +507,108 @@ export default function BulkMessagingTab() {
               <span>{t('viewLogsBtn')}</span>
             </button>
           </div>
+        </div>
+
+        {/* ---------- WhatsApp connection (gateway) ---------- */}
+        <div className="rounded-2xl border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-black/40 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2.5">
+              {transport?.ready ? (
+                <span className="w-9 h-9 rounded-xl bg-emerald-500/15 text-emerald-500 flex items-center justify-center">
+                  <Wifi className="w-5 h-5" />
+                </span>
+              ) : (
+                <span className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-500 flex items-center justify-center">
+                  <WifiOff className="w-5 h-5" />
+                </span>
+              )}
+              <div>
+                <p className="text-sm font-extrabold">
+                  {transport?.mode === 'gateway'
+                    ? (lang === 'ar' ? 'بوابة واتساب (إرسال آلي)' : 'WhatsApp gateway (automatic sending)')
+                    : transport?.mode === 'webhook'
+                      ? (lang === 'ar' ? 'وضع الويب هوك' : 'Webhook mode')
+                      : (lang === 'ar' ? 'الوضع اليدوي عبر واتساب ويب' : 'Manual WhatsApp Web mode')}
+                </p>
+                <p className="text-[11px] text-slate-500 font-bold">
+                  {transport?.status?.provider ? `${transport.status.provider} · ` : ''}
+                  {transport?.status?.status || transport?.mode || '—'}
+                  {transport?.status?.me?.pushname ? ` · ${transport.status.me.pushname}` : ''}
+                  {transport?.reason ? ` — ${transport.reason}` : ''}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={refreshTransport}
+                disabled={gatewayBusy}
+                className="px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-xs font-bold flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-yellow-500 ${gatewayBusy ? 'animate-spin' : ''}`} />
+                <span>{lang === 'ar' ? 'تحديث الحالة' : 'Refresh'}</span>
+              </button>
+
+              {transport?.mode === 'gateway' && !transport?.ready && (
+                <button
+                  onClick={handleConnectGateway}
+                  disabled={gatewayBusy}
+                  className="px-4 py-2 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs font-extrabold flex items-center gap-1.5"
+                >
+                  {gatewayBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <QrCode className="w-3.5 h-3.5" />}
+                  <span>{lang === 'ar' ? 'ربط واتساب' : 'Connect WhatsApp'}</span>
+                </button>
+              )}
+
+              {transport?.mode === 'gateway' && transport?.ready && (
+                <button
+                  onClick={() => handleDisconnectGateway(true)}
+                  disabled={gatewayBusy}
+                  className="px-4 py-2 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-300 border border-red-200 dark:border-red-900 text-xs font-bold flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>{lang === 'ar' ? 'فصل الجلسة' : 'Log out'}</span>
+                </button>
+              )}
+
+              <label className="px-3 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} className="accent-yellow-400" />
+                <FlaskConical className="w-3.5 h-3.5 text-yellow-500" />
+                <span>{lang === 'ar' ? 'تجربة بدون إرسال' : 'Dry run'}</span>
+              </label>
+            </div>
+          </div>
+
+          {/* QR code to link the WhatsApp account */}
+          {transport?.status?.qr && !transport?.ready && (
+            <div className="flex flex-col sm:flex-row items-center gap-4 p-4 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800">
+              <img src={transport.status.qr} alt="WhatsApp QR" className="w-40 h-40 rounded-xl border border-slate-200 dark:border-zinc-700" />
+              <ol className="text-[11px] font-bold text-slate-600 dark:text-zinc-300 space-y-1 list-decimal ltr:pl-4 rtl:pr-4">
+                <li>{lang === 'ar' ? 'افتح واتساب على هاتف المدرس' : 'Open WhatsApp on the teacher phone'}</li>
+                <li>{lang === 'ar' ? 'الإعدادات ← الأجهزة المرتبطة ← ربط جهاز' : 'Settings → Linked devices → Link a device'}</li>
+                <li>{lang === 'ar' ? 'امسح رمز QR الظاهر هنا' : 'Scan the QR code shown here'}</li>
+                <li>{lang === 'ar' ? 'ستتحول الحالة إلى «جاهز» تلقائياً' : 'The status flips to “ready” automatically'}</li>
+              </ol>
+            </div>
+          )}
+
+          {transport?.mode === 'manual' && (
+            <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+              <span>
+                {lang === 'ar'
+                  ? 'لم يتم العثور على بوابة واتساب. سيتم فتح محادثة كل طالب يدوياً في واتساب ويب (قد يحجب المتصفح النوافذ المنبثقة). شغّل الخادم في مجلد server لتفعيل الإرسال الآلي — راجع WHATSAPP_BULK_SETUP.md'
+                  : 'No WhatsApp gateway detected. Each chat will open manually in WhatsApp Web (popups may be blocked). Start the service in `server/` for fully automatic sending — see WHATSAPP_BULK_SETUP.md'}
+              </span>
+            </p>
+          )}
+
+          {gatewayError && (
+            <p className="text-[11px] font-bold text-red-600 dark:text-red-400 flex items-start gap-2">
+              <XCircle className="w-4 h-4 shrink-0" />
+              <span>{gatewayError}</span>
+            </p>
+          )}
         </div>
 
         {/* Filters Grid */}

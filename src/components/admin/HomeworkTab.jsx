@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   ClipboardList, Check, Save, Eye, Loader2, Key, Users, Unlock, Lock,
   Plus, Trash2, Award, X, Sparkles, FileText, Pencil, ListChecks, CalendarClock,
-  Send, AlertCircle,
+  Send, AlertCircle, Target, RefreshCw, CheckCircle2, XCircle,
 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
 import { YEARS } from '../../data/dummyData'
@@ -11,7 +11,9 @@ import {
   fetchStudents, fetchHomeworkSubmissionsForLesson, fetchGroups,
   fetchHomeworkEntries, createHomeworkEntry, updateHomeworkEntry, deleteHomeworkEntry,
   fetchSubmissionsForAssignment, upsertHomeworkSubmissionGrade, computeHomeworkTotalPoints,
+  autoGradeAssignmentSubmissions, regradeLessonSubmissions,
 } from '../../lib/api'
+import { gradeSubmissionAgainstKey, summarizeGrades } from '../../lib/grading'
 import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 
 /* ------------------------------------------------------------------ */
@@ -98,6 +100,9 @@ export default function HomeworkTab() {
   const [savingId, setSavingId] = useState(null)
   const [loadingSubs, setLoadingSubs] = useState(false)
   const [gradeMsg, setGradeMsg] = useState('')
+  const [autoGrading, setAutoGrading] = useState(false)
+  const [regrading, setRegrading] = useState(false)
+  const [reviewSub, setReviewSub] = useState(null)
 
   /* ----- Lesson gating state (kept from the legacy HomeworkTab) ----- */
   const [lessons, setLessons] = useState([])
@@ -189,13 +194,15 @@ export default function HomeworkTab() {
   const removeQuestion = (idx) =>
     setForm((prev) => ({ ...prev, questions: prev.questions.filter((_, i) => i !== idx) }))
 
-  /* ---------- Submissions & grading ---------- */
+  /* ---------- Submissions & answer-key marking ---------- */
   const openSubmissions = async (entry) => {
     setViewingEntry(entry)
     setGradeMsg('')
     setLoadingSubs(true)
     try {
-      const rows = await fetchSubmissionsForAssignment(entry.id)
+      // Passing the entry lets the API layer mark every stored answer sheet
+      // against the answer key (correct / incorrect / percentage).
+      const rows = await fetchSubmissionsForAssignment(entry.id, entry)
       setSubs(rows)
       const d = {}
       rows.forEach((r) => {
@@ -213,11 +220,14 @@ export default function HomeworkTab() {
     if (!viewingEntry) return
     setSavingId(student.id)
     try {
+      const sub = subs.find((s) => s.student_id === student.id)
       await upsertHomeworkSubmissionGrade({
         assignmentId: viewingEntry.id,
         studentId: student.id,
         score: drafts[student.id]?.score ?? '',
         feedback: drafts[student.id]?.feedback ?? '',
+        answers: sub?.answers && Object.keys(sub.answers).length ? sub.answers : null,
+        questions: viewingEntry.questions || [],
       })
       setGradeMsg(t('gradeSavedMsg'))
       setTimeout(() => setGradeMsg(''), 3500)
@@ -226,6 +236,33 @@ export default function HomeworkTab() {
       alert(err.message)
     } finally {
       setSavingId(null)
+    }
+  }
+
+  /**
+   * Mark EVERY submitted answer sheet against the answer key at once and
+   * persist the resulting score / correct / incorrect / percentage.
+   */
+  const handleAutoGradeAll = async () => {
+    if (!viewingEntry) return
+    if (!(viewingEntry.questions || []).length) {
+      alert(lang === 'ar' ? 'أضف أسئلة ونموذج إجابة أولاً.' : 'Add questions with an answer key first.')
+      return
+    }
+    setAutoGrading(true)
+    try {
+      const res = await autoGradeAssignmentSubmissions(viewingEntry)
+      setGradeMsg(
+        lang === 'ar'
+          ? `تم تصحيح ${res.graded} ورقة آلياً — متوسط النتيجة ${res.stats.averagePercent}% (صحيح: ${res.stats.totalCorrect} / خطأ: ${res.stats.totalIncorrect})`
+          : `Auto-marked ${res.graded} paper(s) — average ${res.stats.averagePercent}% (correct: ${res.stats.totalCorrect} / incorrect: ${res.stats.totalIncorrect})`
+      )
+      setTimeout(() => setGradeMsg(''), 6000)
+      await openSubmissions(viewingEntry)
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setAutoGrading(false)
     }
   }
 
@@ -247,14 +284,19 @@ export default function HomeworkTab() {
   const submissionMap = {}
   subs.forEach((s) => { submissionMap[s.student_id] = s })
 
-  const gradedRows = enrolledStudents.filter((s) => submissionMap[s.student_id]?.status === 'graded' && submissionMap[s.student_id]?.score != null)
-  const submittedRows = enrolledStudents.filter((s) => submissionMap[s.student_id] && submissionMap[s.student_id]?.status !== 'graded')
-  const avgPercent = gradedRows.length
-    ? Math.round(gradedRows.reduce((sum, s) => {
-        const total = viewingEntry?.totalPoints || viewingEntry?.maxScore || 1
-        return sum + (total > 0 ? (Number(submissionMap[s.id].score) / total) * 100 : 0)
-      }, 0) / gradedRows.length)
-    : 0
+  const gradedRows = enrolledStudents.filter((s) => submissionMap[s.id]?.status === 'graded' && submissionMap[s.id]?.score != null)
+  const submittedRows = enrolledStudents.filter((s) => submissionMap[s.id] && submissionMap[s.id]?.status !== 'graded')
+
+  // Class statistics are derived from CORRECTNESS, never from how many
+  // students handed something in.
+  const classStats = summarizeGrades(
+    enrolledStudents
+      .map((s) => submissionMap[s.id])
+      .filter((sub) => sub && sub.percentage != null)
+  )
+  const avgPercent = classStats.averagePercent
+  const totalCorrect = classStats.totalCorrect
+  const totalIncorrect = classStats.totalIncorrect
 
   const totalPointsOf = (entry) => entry.totalPoints || entry.maxScore || 0
 
@@ -301,6 +343,30 @@ export default function HomeworkTab() {
 
   const handleModelOptionChange = (qKey, optionLetter) => {
     setModelAnswersMap((prev) => ({ ...prev, [String(qKey)]: optionLetter }))
+  }
+
+  /** Re-mark every stored paper of the selected lesson against the key. */
+  const handleRegradeLesson = async () => {
+    if (!selectedLesson) return
+    setRegrading(true)
+    try {
+      const res = await regradeLessonSubmissions({
+        lessonId: selectedLesson.id,
+        questions: selectedLesson.homeworkQuestions || homeworkQuestionsList,
+        modelAnswers: modelAnswersMap,
+      })
+      setSuccessMsg(
+        lang === 'ar'
+          ? `تمت إعادة تصحيح ${res.updated} ورقة — المتوسط ${res.stats.averagePercent}% (صحيح: ${res.stats.totalCorrect} / خطأ: ${res.stats.totalIncorrect})`
+          : `Re-marked ${res.updated} paper(s) — average ${res.stats.averagePercent}% (correct: ${res.stats.totalCorrect} / incorrect: ${res.stats.totalIncorrect})`
+      )
+      setTimeout(() => setSuccessMsg(''), 6000)
+      await loadLessonSubmissions(selectedLesson.id)
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setRegrading(false)
+    }
   }
 
   const handleSaveModelAnswers = async (e) => {
@@ -759,13 +825,26 @@ export default function HomeworkTab() {
                       {t('totalPointsLabel')}: {totalPointsOf(viewingEntry)} · {t('homeworkQuestionsCount')}: {viewingEntry.questions?.length || 0}
                     </p>
                   </div>
-                  <button onClick={() => setViewingEntry(null)} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+                  <button onClick={() => { setViewingEntry(null); setReviewSub(null) }} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
                 </div>
 
                 <p className="text-xs text-slate-500 bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-zinc-800 rounded-2xl p-3 flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 text-yellow-500 shrink-0 mt-0.5" />
-                  <span>{t('submissionsViewHint')}</span>
+                  <span>{t('answerKeyGradingHint')}</span>
                 </p>
+
+                {/* Auto-mark every answer sheet against the answer key */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={handleAutoGradeAll}
+                    disabled={autoGrading || !(viewingEntry.questions || []).length}
+                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-extrabold inline-flex items-center gap-2 shadow-lg shadow-emerald-600/20 transition"
+                  >
+                    {autoGrading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Target className="w-4 h-4" />}
+                    <span>{t('autoGradeAllBtn')}</span>
+                  </button>
+                  <span className="text-[11px] text-slate-400 font-bold">{t('autoGradeAllHint')}</span>
+                </div>
 
                 {gradeMsg && (
                   <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 text-xs font-bold text-center flex items-center justify-center gap-2">
@@ -774,8 +853,8 @@ export default function HomeworkTab() {
                   </div>
                 )}
 
-                {/* Summary stats */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {/* Summary stats — computed from correct vs incorrect answers */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                   <div className="p-4 rounded-2xl bg-slate-50 dark:bg-black/50 border border-slate-200 dark:border-zinc-800 text-center">
                     <span className="text-xs text-slate-500 font-bold block">{t('enrolledStudents')}</span>
                     <span className="text-2xl font-extrabold font-outfit">{enrolledStudents.length}</span>
@@ -787,6 +866,14 @@ export default function HomeworkTab() {
                   <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-700 text-center">
                     <span className="text-xs text-emerald-700 dark:text-emerald-300 font-bold block">{t('gradedCountShort')}</span>
                     <span className="text-2xl font-extrabold font-outfit text-emerald-600 dark:text-emerald-400">{gradedRows.length}</span>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-700 text-center">
+                    <span className="text-xs text-emerald-700 dark:text-emerald-300 font-bold block">{t('correctAnswersLabel')}</span>
+                    <span className="text-2xl font-extrabold font-outfit text-emerald-600 dark:text-emerald-400">{totalCorrect}</span>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-950/30 border border-red-300 dark:border-red-800 text-center">
+                    <span className="text-xs text-red-700 dark:text-red-300 font-bold block">{t('incorrectAnswersLabel')}</span>
+                    <span className="text-2xl font-extrabold font-outfit text-red-600 dark:text-red-400">{totalIncorrect}</span>
                   </div>
                   <div className="p-4 rounded-2xl bg-purple-50 dark:bg-purple-950/40 border border-purple-300 dark:border-purple-700 text-center">
                     <span className="text-xs text-purple-700 dark:text-purple-300 font-bold block">{t('avgGradeShort')}</span>
@@ -808,6 +895,8 @@ export default function HomeworkTab() {
                           <th className="p-3 text-start font-bold">{t('student')}</th>
                           <th className="p-3 text-start font-bold">{t('groupCol')}</th>
                           <th className="p-3 text-start font-bold">{t('submissionStatusCol')}</th>
+                          <th className="p-3 text-start font-bold">{t('correctIncorrectCol')}</th>
+                          <th className="p-3 text-start font-bold">{t('percentageLabel')}</th>
                           <th className="p-3 text-start font-bold">{t('earnedGradeCol')}</th>
                           <th className="p-3 text-start font-bold">{t('teacherFeedback')}</th>
                           <th className="p-3 text-end font-bold">{t('actions')}</th>
@@ -839,6 +928,35 @@ export default function HomeworkTab() {
                                   </span>
                                 )}
                               </td>
+
+                              {/* Correct vs incorrect — straight from the answer key */}
+                              <td className="p-3">
+                                {sub?.correctCount != null ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="px-2 py-0.5 rounded-lg text-[11px] font-extrabold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                                      ✓ {sub.correctCount}
+                                    </span>
+                                    <span className="px-2 py-0.5 rounded-lg text-[11px] font-extrabold bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300">
+                                      ✕ {sub.incorrectCount ?? 0}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-[11px] text-slate-400">—</span>
+                                )}
+                              </td>
+
+                              <td className="p-3">
+                                {sub?.percentage != null ? (
+                                  <span className={`font-extrabold font-mono text-xs ${
+                                    sub.percentage >= 50 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+                                  }`}>
+                                    {sub.percentage}%
+                                  </span>
+                                ) : (
+                                  <span className="text-[11px] text-slate-400">—</span>
+                                )}
+                              </td>
+
                               <td className="p-3">
                                 <div className="flex items-center gap-1.5">
                                   <input
@@ -860,14 +978,25 @@ export default function HomeworkTab() {
                                 />
                               </td>
                               <td className="p-3 text-end">
-                                <button
-                                  onClick={() => handleSaveGrade(student)}
-                                  disabled={savingId === student.id}
-                                  className="px-3.5 py-1.5 rounded-lg bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black text-xs font-bold inline-flex items-center gap-1.5"
-                                >
-                                  {savingId === student.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                                  <span>{t('saveGrade')}</span>
-                                </button>
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {sub?.hasAnswers && (
+                                    <button
+                                      onClick={() => setReviewSub({ student, sub })}
+                                      title={t('answerReviewTitle')}
+                                      className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold inline-flex items-center gap-1.5 hover:text-yellow-500"
+                                    >
+                                      <Eye className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => handleSaveGrade(student)}
+                                    disabled={savingId === student.id}
+                                    className="px-3.5 py-1.5 rounded-lg bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black text-xs font-bold inline-flex items-center gap-1.5"
+                                  >
+                                    {savingId === student.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                                    <span>{t('saveGrade')}</span>
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           )
@@ -879,6 +1008,59 @@ export default function HomeworkTab() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* -------- Per-student answer review (student answer vs answer key) -------- */}
+      {reviewSub && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 max-w-2xl w-full space-y-4 max-h-[85vh] overflow-y-auto shadow-2xl border border-slate-200 dark:border-zinc-800">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-zinc-800 pb-3">
+              <div>
+                <h3 className="font-bold text-base flex items-center gap-2">
+                  <ListChecks className="w-5 h-5 text-yellow-500" />
+                  <span>{t('answerReviewTitle')} — {reviewSub.student.full_name}</span>
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {t('correctAnswersLabel')}: {reviewSub.sub.correctCount ?? 0} ·{' '}
+                  {t('incorrectAnswersLabel')}: {reviewSub.sub.incorrectCount ?? 0} ·{' '}
+                  {t('percentageLabel')}: {reviewSub.sub.percentage ?? 0}%
+                </p>
+              </div>
+              <button onClick={() => setReviewSub(null)} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+            </div>
+
+            <div className="space-y-2">
+              {(reviewSub.sub.breakdown?.length
+                ? reviewSub.sub.breakdown
+                : gradeSubmissionAgainstKey({
+                    questions: viewingEntry?.questions || [],
+                    answers: reviewSub.sub.answers || {},
+                  }).breakdown
+              ).map((b) => (
+                <div
+                  key={b.questionId || b.number}
+                  className={`p-3 rounded-xl border text-xs font-bold flex items-start justify-between gap-3 ${
+                    b.isCorrect
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800'
+                      : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900'
+                  }`}
+                >
+                  <span className="flex-1">
+                    {b.number}. {b.question}
+                  </span>
+                  <span className="font-mono shrink-0 flex items-center gap-1.5">
+                    {b.isCorrect
+                      ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                      : <XCircle className="w-4 h-4 text-red-500" />}
+                    <span>{b.studentLetter || b.studentAnswer || '—'}</span>
+                    {!b.isCorrect && <span className="text-emerald-600 dark:text-emerald-400">→ {b.correctAnswer || b.correctLetter || '—'}</span>}
+                    <span className="text-slate-400">({b.earnedPoints}/{b.points})</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -989,6 +1171,19 @@ export default function HomeworkTab() {
                   </div>
                 </div>
 
+                {/* Re-mark every stored paper against the CURRENT answer key */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={handleRegradeLesson}
+                    disabled={regrading || lessonSubs.length === 0}
+                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-extrabold inline-flex items-center gap-2 shadow-lg shadow-emerald-600/20 transition"
+                  >
+                    {regrading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                    <span>{t('regradeLessonBtn')}</span>
+                  </button>
+                  <span className="text-[11px] text-slate-400 font-bold">{t('regradeLessonHint')}</span>
+                </div>
+
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div className="p-4 rounded-2xl bg-slate-50 dark:bg-black/50 border border-slate-200 dark:border-zinc-800 text-center">
                     <span className="text-xs text-slate-500 font-bold block">{lang === 'ar' ? 'إجمالي الطلاب' : 'Total Students'}</span>
@@ -1043,13 +1238,20 @@ export default function HomeworkTab() {
                               </td>
                               <td className="p-3 font-mono font-bold">
                                 {sub ? (
-                                  <span className={`px-2.5 py-0.5 rounded-lg text-xs font-extrabold ${
-                                    sub.percentage >= 60
-                                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
-                                      : 'bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-300'
-                                  }`}>
-                                    {sub.score} / {sub.totalQuestions} ({sub.percentage}%)
-                                  </span>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className={`px-2.5 py-0.5 rounded-lg text-xs font-extrabold ${
+                                      sub.percentage >= 60
+                                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                        : 'bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-300'
+                                    }`}>
+                                      {sub.score} / {sub.totalPoints || sub.totalQuestions} ({sub.percentage}%)
+                                    </span>
+                                    {sub.correctCount != null && (
+                                      <span className="text-[10px] text-slate-500">
+                                        ✓{sub.correctCount} ✕{sub.incorrectCount ?? 0}
+                                      </span>
+                                    )}
+                                  </div>
                                 ) : (
                                   <span className="text-slate-400 text-xs">—</span>
                                 )}
@@ -1111,8 +1313,23 @@ export default function HomeworkTab() {
                 <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-700 flex justify-between items-center text-sm font-bold text-emerald-800 dark:text-emerald-300">
                   <span>{t('homeworkScoreLabel')}:</span>
                   <span className="text-base font-extrabold font-mono">
-                    {viewingSubmission.score} / {viewingSubmission.totalQuestions} ({viewingSubmission.percentage}%)
+                    {viewingSubmission.score} / {viewingSubmission.totalPoints || viewingSubmission.totalQuestions} ({viewingSubmission.percentage}%)
                   </span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
+                    <span className="block text-[11px] font-bold text-slate-500">{t('correctAnswersLabel')}</span>
+                    <span className="text-lg font-extrabold text-emerald-600 dark:text-emerald-400">{viewingSubmission.correctCount ?? 0}</span>
+                  </div>
+                  <div className="p-3 rounded-2xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900">
+                    <span className="block text-[11px] font-bold text-slate-500">{t('incorrectAnswersLabel')}</span>
+                    <span className="text-lg font-extrabold text-red-600 dark:text-red-400">{viewingSubmission.incorrectCount ?? 0}</span>
+                  </div>
+                  <div className="p-3 rounded-2xl bg-yellow-400/10 border border-yellow-400/40">
+                    <span className="block text-[11px] font-bold text-slate-500">{t('percentageLabel')}</span>
+                    <span className="text-lg font-extrabold text-yellow-600 dark:text-yellow-400">{viewingSubmission.percentage ?? 0}%</span>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -1120,29 +1337,30 @@ export default function HomeworkTab() {
                     {lang === 'ar' ? 'مقارنة إجابات الطالب بنموذج الإجابة' : 'Student Answers vs Model Answer Key'}
                   </label>
                   <div className="space-y-2">
-                    {Array.from({ length: viewingSubmission.totalQuestions || 5 }, (_, i) => {
-                      const qKey = String(i + 1)
-                      const studentAns = viewingSubmission.answers?.[qKey] || '—'
-                      const modelAns = selectedLesson?.modelAnswers?.[qKey] || 'A'
-                      const isMatch = studentAns === modelAns || studentAns.startsWith(modelAns)
-                      return (
-                        <div
-                          key={qKey}
-                          className={`p-3 rounded-xl border flex items-center justify-between text-xs font-bold ${
-                            isMatch
-                              ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
-                              : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800 text-red-800 dark:text-red-300'
-                          }`}
-                        >
-                          <span>{t('questionNum')} {qKey}</span>
-                          <div className="flex items-center gap-3 font-mono">
-                            <span>إجابة الطالب: <strong>{studentAns}</strong></span>
-                            <span>النموذجية: <strong>{modelAns}</strong></span>
-                            <span>{isMatch ? '✅' : '❌'}</span>
-                          </div>
+                    {(viewingSubmission.breakdown?.length
+                      ? viewingSubmission.breakdown
+                      : gradeSubmissionAgainstKey({
+                          questions: selectedLesson?.homeworkQuestions || [],
+                          modelAnswers: selectedLesson?.modelAnswers || {},
+                          answers: viewingSubmission.answers || {},
+                        }).breakdown
+                    ).map((b) => (
+                      <div
+                        key={b.questionId || b.number}
+                        className={`p-3 rounded-xl border flex items-center justify-between text-xs font-bold gap-3 ${
+                          b.isCorrect
+                            ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                            : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800 text-red-800 dark:text-red-300'
+                        }`}
+                      >
+                        <span className="flex-1 truncate">{t('questionNum')} {b.number}{b.question ? ` — ${b.question}` : ''}</span>
+                        <div className="flex items-center gap-3 font-mono shrink-0">
+                          <span>{lang === 'ar' ? 'إجابة الطالب' : 'Student'}: <strong>{b.studentLetter || b.studentAnswer || '—'}</strong></span>
+                          <span>{lang === 'ar' ? 'النموذجية' : 'Key'}: <strong>{b.correctAnswer || b.correctLetter || '—'}</strong></span>
+                          <span>{b.isCorrect ? '✅' : '❌'}</span>
                         </div>
-                      )
-                    })}
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>

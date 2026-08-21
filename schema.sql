@@ -687,7 +687,10 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  IF public.is_admin() THEN
+  -- Admins grade freely; the server-side auto-marker
+  -- (grade_assignment_submission in homework-grading.sql) sets the
+  -- physics_hub.autograde flag while it writes the computed score.
+  IF public.is_admin() OR COALESCE(current_setting('physics_hub.autograde', true), 'off') = 'on' THEN
     RETURN NEW;
   END IF;
 
