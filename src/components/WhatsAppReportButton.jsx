@@ -5,7 +5,7 @@ import {
   fetchStudentAnalytics, fetchGradesForStudent,
   fetchAttendanceForStudent, fetchAssignments, fetchSubmissionsForStudent,
 } from '../lib/api'
-import { buildReportMessage, sendReport, isWebhookConfigured } from '../lib/whatsapp'
+import { buildReportMessage, sendMessageSmart, isWebhookConfigured } from '../lib/whatsapp'
 
 /**
  * Gathers a student's attendance + grades + outstanding homework and pushes
@@ -46,7 +46,9 @@ export default function WhatsAppReportButton({ student, compact = false }) {
         lang,
       })
 
-      await sendReport(phone, message, { studentId: student.id, target })
+      // Uses the WhatsApp gateway when it is connected, otherwise the
+      // configured webhook, otherwise a wa.me deep link.
+      await sendMessageSmart(phone, message, { studentId: student.id, studentName: student.full_name, target })
       if (isWebhookConfigured()) alert(t('reportSent'))
     } catch (err) {
       console.error(err)

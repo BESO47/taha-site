@@ -292,6 +292,9 @@ CREATE TABLE IF NOT EXISTS public.assignments (
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS questions JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS total_points NUMERIC(8,2);
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS group_name TEXT;
+-- Homework explanation video (unlocked for the student once graded)
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS explanation_video_url   TEXT;
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS explanation_video_title TEXT;
 
 CREATE INDEX IF NOT EXISTS assignments_year_id_idx   ON public.assignments(year_id);
 CREATE INDEX IF NOT EXISTS assignments_group_name_idx ON public.assignments(group_name);
@@ -687,7 +690,10 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  IF public.is_admin() THEN
+  -- Admins grade freely; the server-side auto-marker
+  -- (grade_assignment_submission in homework-grading.sql) sets the
+  -- physics_hub.autograde flag while it writes the computed score.
+  IF public.is_admin() OR COALESCE(current_setting('physics_hub.autograde', true), 'off') = 'on' THEN
     RETURN NEW;
   END IF;
 

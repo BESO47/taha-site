@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 
 import { LanguageProvider } from './lib/i18n.jsx'
@@ -20,7 +20,7 @@ import PastExamsPage from './pages/PastExamsPage.jsx'
 import AdminDashboardPage from './pages/AdminDashboardPage.jsx'
 import StudentProfilePage from './pages/StudentProfilePage.jsx'
 import HomeworkPage from './pages/HomeworkPage.jsx'
-import VideosPage from './pages/VideosPage.jsx'
+import LessonsPage from './pages/LessonsPage.jsx'
 
 // Helper component to scroll to top on route change
 function ScrollToTop() {
@@ -51,6 +51,9 @@ function AnimatedRoutes() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/years/:yearId" element={<YearDetailPage />} />
+
+          {/* --------- Lessons: instructional content only --------- */}
+          <Route path="/lessons" element={<LessonsPage />} />
           <Route path="/lessons/:lessonId" element={<LessonDetailPage />} />
           <Route path="/exams" element={<PastExamsPage />} />
           <Route
@@ -61,6 +64,7 @@ function AnimatedRoutes() {
               </ProtectedStudentRoute>
             }
           />
+          {/* ---- Homework: assignments, grading & explanation videos ---- */}
           <Route
             path="/homework"
             element={
@@ -69,14 +73,8 @@ function AnimatedRoutes() {
               </ProtectedStudentRoute>
             }
           />
-          <Route
-            path="/videos"
-            element={
-              <ProtectedStudentRoute>
-                <HomeworkPage />
-              </ProtectedStudentRoute>
-            }
-          />
+          {/* Legacy paths kept working */}
+          <Route path="/videos" element={<Navigate to="/lessons" replace />} />
           <Route
             path="/admin"
             element={
