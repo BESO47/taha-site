@@ -12,6 +12,7 @@ import { fetchStudents, fetchStudentAnalytics } from '../lib/api'
 import { isWebhookConfigured } from '../lib/whatsapp'
 
 import StudentsTab from '../components/admin/StudentsTab.jsx'
+import HomeworkTab from '../components/admin/HomeworkTab.jsx'
 import QuizzesTab from '../components/admin/QuizzesTab.jsx'
 import AssignmentsTab from '../components/admin/AssignmentsTab.jsx'
 import AttendanceTab from '../components/admin/AttendanceTab.jsx'
@@ -68,8 +69,9 @@ export default function AdminDashboardPage() {
   const TABS = [
     { id: 'overview', label: t('adminOverview'), icon: Sparkles },
     { id: 'students', label: `${t('adminStudents')} (${students.length})`, icon: Users },
+    { id: 'homework', label: t('adminHomeworkTab'), icon: ClipboardList },
     { id: 'quizzes', label: t('adminQuizzes'), icon: Award },
-    { id: 'assignments', label: t('adminAssignments'), icon: ClipboardList },
+    { id: 'assignments', label: t('adminAssignments'), icon: FileText },
     { id: 'attendance', label: t('adminAttendance'), icon: CalendarCheck },
     { id: 'videos', label: t('adminVideos'), icon: Video },
     { id: 'content', label: t('navLessons'), icon: BookOpen },
@@ -198,6 +200,7 @@ export default function AdminDashboardPage() {
           {tab === 'students' && (
             <StudentsTab students={students} analytics={analytics} onRefresh={loadCore} />
           )}
+          {tab === 'homework' && <HomeworkTab />}
           {tab === 'quizzes' && <QuizzesTab students={students} />}
           {tab === 'assignments' && <AssignmentsTab />}
           {tab === 'attendance' && <AttendanceTab students={students} />}

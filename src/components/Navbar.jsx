@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Menu, X, Sun, Moon, LogIn, LogOut, UserPlus, FileText, Home, User, BookOpen, ChevronDown, Globe, Zap, Video, LayoutDashboard } from 'lucide-react'
+import { Menu, X, Sun, Moon, LogIn, LogOut, UserPlus, FileText, Home, User, BookOpen, ChevronDown, Globe, Zap, ClipboardList, LayoutDashboard } from 'lucide-react'
 import { YEARS } from '../data/dummyData'
 import { useLanguage } from '../lib/i18n.jsx'
 import { useAuth } from '../lib/auth.jsx'
@@ -140,14 +140,14 @@ export default function Navbar() {
 
               {session && (
                 <Link
-                  to="/videos"
-                  className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 ${isActive('/videos')
+                  to="/homework"
+                  className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 ${isActive('/homework') || isActive('/videos')
                     ? 'bg-yellow-400/20 text-yellow-400 border border-yellow-400/30 shadow-inner'
                     : 'text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400'
                     }`}
                 >
-                  <Video className="w-4 h-4" />
-                  <span>{t('navVideos')}</span>
+                  <ClipboardList className="w-4 h-4" />
+                  <span>{t('navHomework')}</span>
                 </Link>
               )}
 
@@ -338,11 +338,11 @@ export default function Navbar() {
 
             {session && (
               <Link
-                to="/videos"
+                to="/homework"
                 className="px-4 py-2.5 rounded-xl text-sm font-bold text-white hover:bg-zinc-800 hover:text-yellow-400 flex items-center gap-2"
               >
-                <Video className="w-4 h-4" />
-                <span>{t('navVideos')}</span>
+                <ClipboardList className="w-4 h-4" />
+                <span>{t('navHomework')}</span>
               </Link>
             )}
 
