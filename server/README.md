@@ -1,32 +1,37 @@
-# Physics Hub — WhatsApp gateway
+# Physics Hub WhatsApp gateway
 
-Node service that owns the WhatsApp session and the bulk dispatch queue for the
-admin dashboard.
+Persistent, authenticated Express service for bulk WhatsApp delivery.
+
+## Responsibilities
+
+- Verify an active Supabase administrator or server-only API key.
+- Enforce CORS, security headers, rate/body/message/recipient limits.
+- Normalize phone numbers and sanitize metadata.
+- Serialize/pause/resume/cancel jobs with pacing and retries.
+- Adapt to Meta Cloud API, trusted webhook, mock, or optional WhatsApp Web.
+
+## Run
 
 ```bash
-npm install                 # add PUPPETEER_SKIP_DOWNLOAD=true if Chromium can't download
+npm ci
 cp .env.example .env
-npm start                   # http://localhost:4000/api/whatsapp/health
-npm run mock                # dry-run provider: logs instead of sending
+npm test
+npm start
 ```
 
-Providers (`WA_PROVIDER`): `whatsapp-web` (default, QR session), `cloud-api`
-(Meta WhatsApp Cloud API), `webhook` (UltraMsg / Green API / Baileys / n8n relay),
-`mock`.
+Production refuses missing authentication, insecure-local mode, wildcard origins, mock provider, and weak API keys.
 
-Full instructions, production deployment, pacing/anti-ban settings, API reference
-and troubleshooting: [`../WHATSAPP_BULK_SETUP.md`](../WHATSAPP_BULK_SETUP.md).
-
-```
+```text
 src/
-  index.js              Express app + routes
-  config.js             every env var in one place
-  queue.js              sequential job queue (delay, jitter, retries, pause/resume/cancel)
-  phone.js              phone normalization/validation (mirrors the front-end)
-  logger.js
-  providers/
-    whatsappWeb.js      whatsapp-web.js session (QR, LocalAuth, auto-reconnect)
-    cloudApi.js         Meta WhatsApp Cloud API
-    webhook.js          generic HTTP relay
-    mock.js             dry run
+  index.js        process boot/shutdown
+  app.js          middleware/controllers/routes
+  auth.js         Supabase admin/API-key verification
+  validation.js   HTTP payload validation
+  config.js       environment parsing and production validation
+  queue.js        serialized business queue
+  phone.js        normalization/validation
+  providers/      provider adapters
+test/             HTTP/queue/phone integration tests
 ```
+
+See [`../docs/API.md`](../docs/API.md), [`../docs/OPERATIONS.md`](../docs/OPERATIONS.md), and [`../WHATSAPP_BULK_SETUP.md`](../WHATSAPP_BULK_SETUP.md).

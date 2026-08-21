@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Menu, X, Sun, Moon, LogIn, LogOut, UserPlus, FileText, Home, User, BookOpen, ChevronDown, Globe, Zap, ClipboardList, LayoutDashboard } from 'lucide-react'
-import { YEARS } from '../data/dummyData'
+import { YEARS } from '../data/catalog'
 import { useLanguage } from '../lib/i18n.jsx'
 import { useAuth } from '../lib/auth.jsx'
 

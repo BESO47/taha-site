@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { BookOpen, FileText, Plus, Trash2, Pencil, Loader2, Save, X } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
-import { YEARS, GOVERNORATES } from '../../data/dummyData'
+import { YEARS, GOVERNORATES } from '../../data/catalog'
 import {
   fetchLessonsFromSupabase, createLessonInSupabase,
   updateLessonInSupabase, deleteLessonFromSupabase,

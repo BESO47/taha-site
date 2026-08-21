@@ -23,8 +23,12 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  NEW.role      := OLD.role;
-  NEW.is_active := OLD.is_active;
+  NEW.role       := OLD.role;
+  NEW.is_active  := OLD.is_active;
+  NEW.year_id    := OLD.year_id;
+  NEW.group_id   := OLD.group_id;
+  NEW.group_name := OLD.group_name;
+  NEW.email      := OLD.email;
   RETURN NEW;
 END;
 $$;

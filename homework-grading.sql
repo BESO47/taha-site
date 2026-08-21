@@ -276,28 +276,57 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  autograding BOOLEAN := COALESCE(current_setting('physics_hub.autograde', true), 'off') = 'on';
 BEGIN
-  IF public.is_admin() OR COALESCE(current_setting('physics_hub.autograde', true), 'off') = 'on' THEN
+  IF auth.uid() IS NULL OR public.is_admin() OR autograding THEN
     RETURN NEW;
   END IF;
 
-  NEW.score     := OLD.score;
-  NEW.feedback  := OLD.feedback;
-  NEW.graded_by := OLD.graded_by;
-  NEW.graded_at := OLD.graded_at;
-
-  -- students may only ever put a row back into 'submitted'
-  IF NEW.status IS DISTINCT FROM OLD.status AND NEW.status <> 'submitted' THEN
-    NEW.status := OLD.status;
+  IF NEW.file_url IS NOT NULL AND NEW.file_url NOT LIKE auth.uid()::text || '/%' THEN
+    RAISE EXCEPTION 'Invalid submission file path' USING ERRCODE = '22023';
   END IF;
 
+  IF TG_OP = 'INSERT' THEN
+    NEW.student_id       := auth.uid();
+    NEW.status           := 'submitted';
+    NEW.score            := NULL;
+    NEW.feedback         := NULL;
+    NEW.graded_by        := NULL;
+    NEW.graded_at        := NULL;
+    NEW.correct_count    := NULL;
+    NEW.incorrect_count  := NULL;
+    NEW.unanswered_count := NULL;
+    NEW.total_points     := NULL;
+    NEW.percentage       := NULL;
+    NEW.breakdown        := '[]'::jsonb;
+    NEW.auto_graded      := false;
+    NEW.submitted_at     := now();
+    RETURN NEW;
+  END IF;
+
+  NEW.assignment_id    := OLD.assignment_id;
+  NEW.student_id       := OLD.student_id;
+  NEW.score            := OLD.score;
+  NEW.feedback         := OLD.feedback;
+  NEW.graded_by        := OLD.graded_by;
+  NEW.graded_at        := OLD.graded_at;
+  NEW.correct_count    := OLD.correct_count;
+  NEW.incorrect_count  := OLD.incorrect_count;
+  NEW.unanswered_count := OLD.unanswered_count;
+  NEW.total_points     := OLD.total_points;
+  NEW.percentage       := OLD.percentage;
+  NEW.breakdown        := OLD.breakdown;
+  NEW.auto_graded      := OLD.auto_graded;
+  NEW.status           := 'submitted';
+  NEW.submitted_at     := now();
   RETURN NEW;
 END;
 $$;
 
 DROP TRIGGER IF EXISTS submissions_guard_grading ON public.submissions;
 CREATE TRIGGER submissions_guard_grading
-  BEFORE UPDATE ON public.submissions
+  BEFORE INSERT OR UPDATE ON public.submissions
   FOR EACH ROW EXECUTE FUNCTION public.guard_submission_grading();
 
 -- ---------------------------------------------------------------------
@@ -336,7 +365,28 @@ BEGIN
 
   -- Only an admin may submit on behalf of somebody else
   IF v_student <> auth.uid() AND NOT public.is_admin() THEN
-    RAISE EXCEPTION 'Not allowed to submit for another student';
+    RAISE EXCEPTION 'Not allowed to submit for another student' USING ERRCODE = '42501';
+  END IF;
+  IF jsonb_typeof(COALESCE(p_answers, '{}'::jsonb)) <> 'object'
+     OR pg_column_size(COALESCE(p_answers, '{}'::jsonb)) > 65536 THEN
+    RAISE EXCEPTION 'Answers must be a JSON object no larger than 64 KB' USING ERRCODE = '22023';
+  END IF;
+  IF p_content IS NOT NULL AND char_length(p_content) > 20000 THEN
+    RAISE EXCEPTION 'Submission text is too long' USING ERRCODE = '22023';
+  END IF;
+  IF NOT public.is_admin() THEN
+    IF NOT public.can_access_assignment(p_assignment_id) THEN
+      RAISE EXCEPTION 'This homework is not available to your account' USING ERRCODE = '42501';
+    END IF;
+    IF p_file_url IS NOT NULL AND p_file_url NOT LIKE auth.uid()::text || '/%' THEN
+      RAISE EXCEPTION 'Invalid submission file path' USING ERRCODE = '22023';
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM public.submissions
+      WHERE assignment_id = p_assignment_id AND student_id = v_student AND status = 'graded'
+    ) THEN
+      RAISE EXCEPTION 'This homework has already been graded' USING ERRCODE = '23505';
+    END IF;
   END IF;
 
   SELECT COALESCE(questions, '[]'::jsonb), is_published
@@ -434,7 +484,26 @@ BEGIN
     RAISE EXCEPTION 'Not authenticated';
   END IF;
   IF v_student <> auth.uid() AND NOT public.is_admin() THEN
-    RAISE EXCEPTION 'Not allowed to submit for another student';
+    RAISE EXCEPTION 'Not allowed to submit for another student' USING ERRCODE = '42501';
+  END IF;
+  IF jsonb_typeof(COALESCE(p_answers, '{}'::jsonb)) <> 'object'
+     OR pg_column_size(COALESCE(p_answers, '{}'::jsonb)) > 65536 THEN
+    RAISE EXCEPTION 'Answers must be a JSON object no larger than 64 KB' USING ERRCODE = '22023';
+  END IF;
+  IF NOT public.is_admin() THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM public.lessons l
+      JOIN public.profiles p ON p.id = auth.uid()
+      WHERE l.id = p_lesson_id AND p.role = 'student' AND p.is_active = true AND p.year_id = l.year_id
+    ) THEN
+      RAISE EXCEPTION 'This lesson homework is not available to your account' USING ERRCODE = '42501';
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM public.homework_submissions
+      WHERE lesson_id = p_lesson_id AND student_id = v_student
+    ) THEN
+      RAISE EXCEPTION 'This lesson homework has already been submitted' USING ERRCODE = '23505';
+    END IF;
   END IF;
 
   SELECT COALESCE(homework_questions, '[]'::jsonb), COALESCE(model_answers, '{}'::jsonb)
@@ -602,7 +671,8 @@ GRANT EXECUTE ON FUNCTION public.regrade_lesson_homework(UUID) TO authenticated;
 -- ---------------------------------------------------------------------
 -- 8. REPORTING VIEW — class results per homework entry, by correctness
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE VIEW public.homework_marking_report AS
+CREATE OR REPLACE VIEW public.homework_marking_report
+WITH (security_invoker = true) AS
 SELECT
   a.id                         AS assignment_id,
   a.title                      AS assignment_title,
@@ -619,6 +689,9 @@ SELECT
 FROM public.assignments a
 LEFT JOIN public.submissions s ON s.assignment_id = a.id
 GROUP BY a.id;
+
+REVOKE ALL ON public.homework_marking_report FROM PUBLIC, anon;
+GRANT SELECT ON public.homework_marking_report TO authenticated;
 
 -- Done. Verify with:
 --   SELECT * FROM public.ph_mark_answers(

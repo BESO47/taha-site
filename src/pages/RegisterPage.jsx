@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import confetti from 'canvas-confetti'
 import { User, Phone, Lock, Eye, EyeOff, GraduationCap, MapPin, Sparkles, UserCheck, ArrowRight, ArrowLeft } from 'lucide-react'
-import { YEARS, GOVERNORATES } from '../data/dummyData'
+import { YEARS, GOVERNORATES } from '../data/catalog'
 import { supabase } from '../lib/supabase'
+import { normalizePhone, validatePhone } from '../lib/whatsapp'
 import { useLanguage } from '../lib/i18n.jsx'
 
 export default function RegisterPage() {
@@ -39,17 +39,43 @@ export default function RegisterPage() {
       return
     }
 
-    if (password.length < 6) {
-      setErrorMsg(lang === 'ar' ? 'كلمة المرور يجب أن تكون 6 أحرف أو أرقام على الأقل' : 'Password must be at least 6 characters.')
+    if (password.length < 8) {
+      setErrorMsg(lang === 'ar' ? 'كلمة المرور يجب أن تكون 8 أحرف على الأقل' : 'Password must be at least 8 characters.')
+      return
+    }
+
+    const studentPhone = validatePhone(phone)
+    const guardianPhone = validatePhone(parentPhone)
+    if (!studentPhone.isValid || !guardianPhone.isValid) {
+      setErrorMsg(lang === 'ar' ? 'تحقق من صيغة رقم الطالب وولي الأمر.' : 'Check the student and guardian phone numbers.')
+      return
+    }
+
+    const cleanName = fullName.trim().replace(/\s+/g, ' ')
+    const cleanEmail = email.trim().toLowerCase()
+    if (cleanName.length < 2 || cleanName.length > 120) {
+      setErrorMsg(lang === 'ar' ? 'يجب أن يكون الاسم بين حرفين و120 حرفاً.' : 'Name must be between 2 and 120 characters.')
       return
     }
 
     setIsLoading(true)
 
     try {
+      // The database auth trigger creates the profile atomically from this
+      // metadata. This also works when email confirmation means signUp does
+      // not return a session (a direct browser INSERT would fail RLS).
       const { data: authData, error: authError } = await supabase.auth.signUp({
-        email,
+        email: cleanEmail,
         password,
+        options: {
+          data: {
+            full_name: cleanName,
+            phone: normalizePhone(studentPhone.normalized),
+            parent_phone: normalizePhone(guardianPhone.normalized),
+            year_id: String(selectedYear),
+            governorate,
+          },
+        },
       })
 
       if (authError) {
@@ -70,41 +96,13 @@ export default function RegisterPage() {
         return
       }
 
-      const { error: profileError } = await supabase.from('profiles').insert([
-        {
-          id: authData.user.id,
-          full_name: fullName,
-          email,
-          phone,
-          parent_phone: parentPhone,
-          year_id: selectedYear,
-          governorate,
-          role: 'student',
-        },
-      ])
-
-      if (profileError) {
-        if (profileError.message?.toLowerCase().includes('duplicate')) {
-          setErrorMsg(lang === 'ar' ? 'رقم الهاتف هذا مُسجّل بحساب بالفعل.' : 'This phone number is already registered.')
-        } else {
-          setErrorMsg(lang === 'ar' ? 'تم إنشاء الحساب ولكن حدث خطأ أثناء حفظ البيانات.' : 'Account created, but profile save failed.')
-        }
-        setIsLoading(false)
-        return
-      }
-
       setIsLoading(false)
       setIsSuccess(true)
 
-      try {
-        confetti({
-          particleCount: 100,
-          spread: 70,
-          origin: { y: 0.6 },
-        })
-      } catch (err) {
-        console.log(err)
-      }
+      // Celebration is non-critical and loaded only after successful signup.
+      import('canvas-confetti')
+        .then(({ default: confetti }) => confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } }))
+        .catch(() => {})
 
       setTimeout(() => {
         navigate('/')
@@ -182,6 +180,9 @@ export default function RegisterPage() {
                   <input
                     type="text"
                     required
+                    autoComplete="name"
+                    minLength={2}
+                    maxLength={120}
                     placeholder={lang === 'ar' ? 'أحمد محمد علي' : 'John Alex Smith'}
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
@@ -323,6 +324,9 @@ export default function RegisterPage() {
                   <input
                     type={showPassword ? 'text' : 'password'}
                     required
+                    autoComplete="new-password"
+                    minLength={8}
+                    maxLength={128}
                     placeholder="••••••••"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}

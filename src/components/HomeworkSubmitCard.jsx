@@ -200,7 +200,8 @@ export default function HomeworkSubmitCard({
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                       {(q.options || []).map((opt, oi) => {
                         const letter = OPTION_LETTERS[oi]
-                        const isKey = revealKey && letter === toOptionLetter(q.answer ?? q.correctAnswer, q.options)
+                        const correctAnswer = reviewed?.correctAnswer ?? q.answer ?? q.correctAnswer
+                        const isKey = revealKey && letter === toOptionLetter(correctAnswer, q.options)
                         const isChosen = chosen === letter
                         const wrongChoice = revealKey && isChosen && !isKey
 
@@ -308,7 +309,12 @@ export default function HomeworkSubmitCard({
                 <label className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-zinc-700 cursor-pointer hover:border-yellow-400 transition text-sm text-slate-600 dark:text-zinc-400">
                   <Upload className="w-4 h-4" />
                   <span>{file ? file.name : t('attachFile')}</span>
-                  <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                  <input
+                    type="file"
+                    accept="application/pdf,image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={(e) => setFile(e.target.files?.[0] || null)}
+                  />
                 </label>
               </div>
 

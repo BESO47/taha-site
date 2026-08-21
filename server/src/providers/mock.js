@@ -29,7 +29,8 @@ export async function checkNumber(phone) {
 export async function sendMessage(phone, message) {
   const { isValid, normalized, error } = validatePhone(phone, config.defaultCountryCode)
   if (!isValid) throw new Error(error)
-  log.info(`[mock] -> +${normalized}: ${String(message).slice(0, 60).replace(/\n/g, ' ')}…`)
+  const masked = normalized.length > 4 ? `${'*'.repeat(normalized.length - 4)}${normalized.slice(-4)}` : '****'
+  log.info(`[mock] validated message for ${masked} (${String(message).length} characters)`)
   await new Promise((r) => setTimeout(r, 150))
   return { id: `mock_${Date.now()}`, chatId: `${normalized}@c.us` }
 }

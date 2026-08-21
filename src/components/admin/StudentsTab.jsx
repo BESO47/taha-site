@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Users, Search, Loader2, TrendingUp, X, Plus, Trash2, Tag, Check, Layers, ClipboardList } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
-import { YEARS } from '../../data/dummyData'
+import { YEARS } from '../../data/catalog'
 import { supabase } from '../../lib/supabase'
 import {
   fetchStudentAnalytics, fetchGradesForStudent, fetchAttendanceForStudent,
@@ -88,10 +88,11 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
     }
   }
 
-  const handleGroupChange = async (studentId, newGroupName) => {
+  const handleGroupChange = async (studentId, newGroupId) => {
     setUpdatingStudentId(studentId)
     try {
-      await updateStudentGroup(studentId, newGroupName)
+      const selectedGroup = groups.find((group) => group.id === newGroupId) || null
+      await updateStudentGroup(studentId, selectedGroup)
       setSuccessMsg(t('groupUpdatedSuccess'))
       setTimeout(() => setSuccessMsg(''), 3000)
       onRefresh?.()
@@ -223,7 +224,9 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
           <div className="space-y-3">
             {filtered.map((s) => {
               const a = analyticsFor(s.id)
-              const studentGroup = s.group_name || s.groupName || ''
+              const studentGroupId = s.group_id || groups.find(
+                (group) => group.name === (s.group_name || s.groupName) && String(group.year_id) === String(s.year_id)
+              )?.id || ''
 
               return (
                 <div
@@ -260,17 +263,19 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                         <Layers className="w-3.5 h-3.5 text-yellow-500 shrink-0" />
                         <span className="text-[10px] font-bold text-slate-400">{t('groupCol')}:</span>
                         <select
-                          value={studentGroup}
+                          value={studentGroupId}
                           disabled={updatingStudentId === s.id}
                           onChange={(e) => handleGroupChange(s.id, e.target.value)}
                           className="bg-transparent text-xs font-bold text-slate-800 dark:text-zinc-200 focus:outline-none cursor-pointer"
                         >
                           <option value="">{t('noGroupAssigned')}</option>
-                          {groups.map((g) => (
-                            <option key={g.id} value={g.name}>
-                              {g.name}
-                            </option>
-                          ))}
+                          {groups
+                            .filter((group) => !group.year_id || String(group.year_id) === String(s.year_id))
+                            .map((group) => (
+                              <option key={group.id} value={group.id}>
+                                {group.name}
+                              </option>
+                            ))}
                         </select>
                         {updatingStudentId === s.id && <Loader2 className="w-3 h-3 animate-spin text-yellow-500" />}
                       </div>

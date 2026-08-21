@@ -15,6 +15,9 @@ const GATEWAY_TARGET = process.env.WHATSAPP_GATEWAY_URL || 'http://127.0.0.1:400
 
 export default defineConfig({
   plugins: [react()],
+  // Route-level lazy loading keeps the shared entry gzip payload around 162 kB;
+  // vendor code is intentionally shared in one long-lived cacheable chunk.
+  build: { chunkSizeWarningLimit: 600 },
   server: {
     host: true,
     allowedHosts: ['.e2b.app'],
@@ -37,7 +40,6 @@ export default defineConfig({
                   error:
                     'WhatsApp gateway is not running. Start it with `npm start` inside the `server/` folder ' +
                     '(see WHATSAPP_BULK_SETUP.md).',
-                  detail: err?.message,
                 })
               )
             }

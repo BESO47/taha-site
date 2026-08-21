@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
+import { Loader2 } from 'lucide-react'
 
 import { LanguageProvider } from './lib/i18n.jsx'
 import { AuthProvider } from './lib/auth.jsx'
@@ -11,18 +12,29 @@ import FloatingPhysicsBg from './components/FloatingPhysicsBg.jsx'
 import ProtectedAdminRoute from './components/ProtectedAdminRoute.jsx'
 import ProtectedStudentRoute from './components/ProtectedStudentRoute.jsx'
 
-import HomePage from './pages/HomePage.jsx'
-import LoginPage from './pages/LoginPage.jsx'
-import RegisterPage from './pages/RegisterPage.jsx'
-import YearDetailPage from './pages/YearDetailPage.jsx'
-import LessonDetailPage from './pages/LessonDetailPage.jsx'
-import PastExamsPage from './pages/PastExamsPage.jsx'
-import AdminDashboardPage from './pages/AdminDashboardPage.jsx'
-import StudentProfilePage from './pages/StudentProfilePage.jsx'
-import HomeworkPage from './pages/HomeworkPage.jsx'
-import LessonsPage from './pages/LessonsPage.jsx'
+// Route-level splitting keeps the large admin tools and data clients out of
+// the public landing-page bundle. Vite emits one cached chunk per route.
+const HomePage = lazy(() => import('./pages/HomePage.jsx'))
+const LoginPage = lazy(() => import('./pages/LoginPage.jsx'))
+const RegisterPage = lazy(() => import('./pages/RegisterPage.jsx'))
+const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage.jsx'))
+const YearDetailPage = lazy(() => import('./pages/YearDetailPage.jsx'))
+const LessonDetailPage = lazy(() => import('./pages/LessonDetailPage.jsx'))
+const PastExamsPage = lazy(() => import('./pages/PastExamsPage.jsx'))
+const AdminDashboardPage = lazy(() => import('./pages/AdminDashboardPage.jsx'))
+const StudentProfilePage = lazy(() => import('./pages/StudentProfilePage.jsx'))
+const HomeworkPage = lazy(() => import('./pages/HomeworkPage.jsx'))
+const LessonsPage = lazy(() => import('./pages/LessonsPage.jsx'))
 
-// Helper component to scroll to top on route change
+function RouteLoader() {
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center" role="status" aria-live="polite">
+      <Loader2 className="w-8 h-8 animate-spin text-yellow-500" aria-hidden="true" />
+      <span className="sr-only">Loading</span>
+    </div>
+  )
+}
+
 function ScrollToTop() {
   const { pathname } = useLocation()
 
@@ -46,103 +58,50 @@ function AnimatedRoutes() {
         transition={{ duration: 0.25 }}
         className="w-full flex-1"
       >
-        <Routes location={location} key={location.pathname}>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route path="/years/:yearId" element={<YearDetailPage />} />
-
-          {/* --------- Lessons: instructional content only --------- */}
-          <Route path="/lessons" element={<LessonsPage />} />
-          <Route path="/lessons/:lessonId" element={<LessonDetailPage />} />
-          <Route path="/exams" element={<PastExamsPage />} />
-          <Route
-            path="/profile"
-            element={
-              <ProtectedStudentRoute>
-                <StudentProfilePage />
-              </ProtectedStudentRoute>
-            }
-          />
-          {/* ---- Homework: assignments, grading & explanation videos ---- */}
-          <Route
-            path="/homework"
-            element={
-              <ProtectedStudentRoute>
-                <HomeworkPage />
-              </ProtectedStudentRoute>
-            }
-          />
-          {/* Legacy paths kept working */}
-          <Route path="/videos" element={<Navigate to="/lessons" replace />} />
-          <Route
-            path="/admin"
-            element={
-              <ProtectedAdminRoute>
-                <AdminDashboardPage />
-              </ProtectedAdminRoute>
-            }
-          />
-          {/* Catch all fallback */}
-          <Route path="*" element={<HomePage />} />
-        </Routes>
+        <Suspense fallback={<RouteLoader />}>
+          <Routes location={location}>
+            <Route path="/" element={<HomePage />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/years/:yearId" element={<YearDetailPage />} />
+            <Route path="/lessons" element={<LessonsPage />} />
+            <Route path="/lessons/:lessonId" element={<LessonDetailPage />} />
+            <Route path="/exams" element={<PastExamsPage />} />
+            <Route
+              path="/profile"
+              element={
+                <ProtectedStudentRoute>
+                  <StudentProfilePage />
+                </ProtectedStudentRoute>
+              }
+            />
+            <Route
+              path="/homework"
+              element={
+                <ProtectedStudentRoute>
+                  <HomeworkPage />
+                </ProtectedStudentRoute>
+              }
+            />
+            <Route path="/videos" element={<Navigate to="/lessons" replace />} />
+            <Route
+              path="/admin"
+              element={
+                <ProtectedAdminRoute>
+                  <AdminDashboardPage />
+                </ProtectedAdminRoute>
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Suspense>
       </motion.div>
     </AnimatePresence>
   )
 }
 
 export default function App() {
-  // Global Anti-Right-Click & Anti-DevTools keyboard shortcuts lock
-  useEffect(() => {
-    const handleGlobalContextMenu = (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      return false
-    }
-
-    const handleGlobalKeyDown = (e) => {
-      const key = e.key
-      const code = e.keyCode || e.which
-
-      // Block F12, F11
-      if (code === 123 || key === 'F12' || code === 122 || key === 'F11') {
-        e.preventDefault()
-        e.stopPropagation()
-        return false
-      }
-
-      // Block Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C
-      if (
-        e.ctrlKey &&
-        e.shiftKey &&
-        (key === 'I' || key === 'i' || key === 'J' || key === 'j' || key === 'C' || key === 'c')
-      ) {
-        e.preventDefault()
-        e.stopPropagation()
-        return false
-      }
-
-      // Block Ctrl+U (View Source), Ctrl+S (Save Page)
-      if (e.ctrlKey && (key === 'u' || key === 'U' || key === 's' || key === 'S')) {
-        e.preventDefault()
-        e.stopPropagation()
-        return false
-      }
-    }
-
-    window.addEventListener('contextmenu', handleGlobalContextMenu, true)
-    document.addEventListener('contextmenu', handleGlobalContextMenu, true)
-    window.addEventListener('keydown', handleGlobalKeyDown, true)
-    document.addEventListener('keydown', handleGlobalKeyDown, true)
-
-    return () => {
-      window.removeEventListener('contextmenu', handleGlobalContextMenu, true)
-      document.removeEventListener('contextmenu', handleGlobalContextMenu, true)
-      window.removeEventListener('keydown', handleGlobalKeyDown, true)
-      document.removeEventListener('keydown', handleGlobalKeyDown, true)
-    }
-  }, [])
-
   return (
     <LanguageProvider>
       <AuthProvider>

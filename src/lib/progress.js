@@ -38,10 +38,6 @@ export function getLessonProgress(studentId) {
   return readAll(studentId)
 }
 
-export function getLessonState(studentId, lessonId) {
-  return readAll(studentId)[String(lessonId)] || null
-}
-
 export function isLessonCompleted(studentId, lessonId) {
   return Boolean(readAll(studentId)[String(lessonId)]?.completed)
 }

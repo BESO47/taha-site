@@ -9,7 +9,6 @@ import { useLanguage } from '../lib/i18n.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { isSupabaseConfigured, SUPABASE_SQL_SCHEMA } from '../lib/supabase'
 import { fetchStudents, fetchStudentAnalytics } from '../lib/api'
-import { isWebhookConfigured } from '../lib/whatsapp'
 
 import StudentsTab from '../components/admin/StudentsTab.jsx'
 import HomeworkTab from '../components/admin/HomeworkTab.jsx'
@@ -137,9 +136,7 @@ export default function AdminDashboardPage() {
           <MessageCircle className="w-4 h-4 text-green-500 shrink-0" />
           <span>WhatsApp:</span>
           <span className="px-2.5 py-0.5 rounded-md bg-slate-200 dark:bg-zinc-800">
-            {isWebhookConfigured()
-              ? (lang === 'ar' ? 'إرسال تلقائي (Webhook)' : 'Automated (webhook)')
-              : (lang === 'ar' ? 'رابط wa.me يدوي' : 'Manual wa.me link')}
+            {lang === 'ar' ? 'بوابة آمنة أو رابط wa.me يدوي' : 'Secure gateway or manual wa.me link'}
           </span>
         </div>
       </div>

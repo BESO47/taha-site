@@ -3,29 +3,36 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "npm run test:grading && npm run test:security && npm --prefix server test",
     "test:grading": "node scripts/test-grading.mjs",
-    "gateway:install": "npm --prefix server install",
+    "test:security": "node scripts/test-security.mjs",
+    "check": "npm test && npm run build",
+    "audit:dependencies": "npm audit && npm --prefix server audit",
+    "gateway:install": "npm --prefix server ci",
     "gateway": "npm --prefix server start",
     "gateway:mock": "npm --prefix server run mock"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.109.0",
+    "@supabase/supabase-js": "^2.112.3",
     "canvas-confetti": "^1.9.4",
-    "framer-motion": "^12.42.2",
-    "lucide-react": "^1.25.0",
+    "framer-motion": "^12.43.0",
+    "lucide-react": "^1.33.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^7.18.1"
+    "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
+    "@vitejs/plugin-react": "^6.1.0",
     "autoprefixer": "^10.5.4",
-    "postcss": "^8.5.22",
+    "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19",
-    "vite": "^5.4.1"
+    "vite": "^8.2.2"
   }
 }

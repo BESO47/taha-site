@@ -31,6 +31,7 @@ export default function LessonDetailPage() {
   const [lesson, setLesson] = useState(null)
   const [siblings, setSiblings] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [completed, setCompleted] = useState(false)
 
   const [comments, setComments] = useState([
@@ -51,24 +52,28 @@ export default function LessonDetailPage() {
     let alive = true
     async function load() {
       setLoading(true)
-      const [data, all] = await Promise.all([
-        fetchLessonByIdFromSupabase(lessonId),
-        fetchLessonsFromSupabase(),
-      ])
-      if (!alive) return
-      setLesson(data)
-      setSiblings(Array.isArray(all) ? all : [])
-      setLoading(false)
-
-      // Progress: opening the lesson marks it as "in progress"
-      if (data) {
-        markLessonWatched(user?.id, data.id)
-        setCompleted(isLessonCompleted(user?.id, data.id))
+      setLoadError('')
+      try {
+        const [data, all] = await Promise.all([
+          fetchLessonByIdFromSupabase(lessonId),
+          fetchLessonsFromSupabase(),
+        ])
+        if (!alive) return
+        setLesson(data)
+        setSiblings(Array.isArray(all) ? all : [])
+        if (data) {
+          markLessonWatched(user?.id, data.id)
+          setCompleted(isLessonCompleted(user?.id, data.id))
+        }
+      } catch (_) {
+        if (alive) setLoadError(lang === 'ar' ? 'تعذر تحميل الدرس.' : 'Could not load the lesson.')
+      } finally {
+        if (alive) setLoading(false)
       }
     }
     load()
     return () => { alive = false }
-  }, [lessonId, user?.id])
+  }, [lessonId, user?.id, lang])
 
   const moduleLessons = useMemo(() => {
     if (!lesson) return []
@@ -107,11 +112,11 @@ export default function LessonDetailPage() {
     )
   }
 
-  if (!lesson) {
+  if (loadError || !lesson) {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center gap-4 text-center px-4">
         <h2 className="text-xl font-bold text-slate-700 dark:text-zinc-200">
-          {lang === 'ar' ? 'عذراً، الدرس غير موجود أو تم حذفه' : 'Sorry, lesson not found or deleted.'}
+          {loadError || (lang === 'ar' ? 'عذراً، الدرس غير موجود أو تم حذفه' : 'Sorry, lesson not found or deleted.')}
         </h2>
         <Link to="/lessons" className="px-6 py-2.5 rounded-xl bg-yellow-400 text-black font-bold text-sm">
           {t('lessonsPageTitle')}
@@ -166,7 +171,7 @@ export default function LessonDetailPage() {
 
         {/* Lesson videos are for registered students (membership gate only —
             no homework requirement: homework lives on /homework). */}
-        {user ? (
+        {lesson.videoUrl && user ? (
           <ProtectedVideoPlayer
             videoUrl={lesson.videoUrl}
             title={lesson.title}
@@ -177,23 +182,29 @@ export default function LessonDetailPage() {
             <div className="w-14 h-14 rounded-full bg-amber-500 text-white flex items-center justify-center mx-auto shadow-lg">
               <Lock className="w-7 h-7" />
             </div>
-            <p className="font-extrabold text-amber-800 dark:text-amber-300">{t('loginToWatch')}</p>
-            <div className="flex flex-col sm:flex-row gap-3 justify-center">
-              <Link
-                to="/login"
-                className="px-6 py-3 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-sm inline-flex items-center justify-center gap-2"
-              >
-                <LogIn className="w-4 h-4" />
-                <span>{t('navLogin')}</span>
-              </Link>
-              <Link
-                to="/register"
-                className="px-6 py-3 rounded-2xl border border-yellow-400/60 text-yellow-700 dark:text-yellow-300 font-bold text-sm inline-flex items-center justify-center gap-2"
-              >
-                <UserPlus className="w-4 h-4" />
-                <span>{t('navRegister')}</span>
-              </Link>
-            </div>
+            <p className="font-extrabold text-amber-800 dark:text-amber-300">
+              {user
+                ? (lang === 'ar' ? 'هذا الفيديو غير متاح لحسابك الحالي.' : 'This video is not available for your current account.')
+                : t('loginToWatch')}
+            </p>
+            {!user && (
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <Link
+                  to="/login"
+                  className="px-6 py-3 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-sm inline-flex items-center justify-center gap-2"
+                >
+                  <LogIn className="w-4 h-4" />
+                  <span>{t('navLogin')}</span>
+                </Link>
+                <Link
+                  to="/register"
+                  className="px-6 py-3 rounded-2xl border border-yellow-400/60 text-yellow-700 dark:text-yellow-300 font-bold text-sm inline-flex items-center justify-center gap-2"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span>{t('navRegister')}</span>
+                </Link>
+              </div>
+            )}
           </div>
         )}
       </div>
