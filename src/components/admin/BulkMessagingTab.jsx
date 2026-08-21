@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   MessageCircle, Users, Loader2, Send, Copy, Check, ExternalLink,
-  Filter, Sparkles, CheckSquare, Square, PhoneOff, Clock, ShieldCheck,
+  Filter, CheckSquare, Square, PhoneOff, Clock, ShieldCheck,
   AlertTriangle, History, RefreshCw, X, FileText, CheckCircle2, XCircle,
-  Layers, ChevronDown
+  Pause, Play, Ban
 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
 import { YEARS } from '../../data/dummyData'
@@ -11,11 +11,14 @@ import { fetchBulkMessagingReport, fetchGroups } from '../../lib/api'
 import {
   isWebhookConfigured,
   dispatchBulkWhatsAppQueue,
+  dispatchWhatsAppLinksSequentially,
+  createQueueController,
   fetchWhatsAppLogs,
   validatePhone,
   normalizePhone,
   formatPhoneWithPlus
 } from '../../lib/whatsapp'
+import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 import {
   TEMPLATE_VARIABLES,
   buildVariableValues,
@@ -77,7 +80,7 @@ export default function BulkMessagingTab() {
 
   // Filters
   const [yearFilter, setYearFilter] = useState('all')
-  const [groupFilter, setGroupFilter] = useState('all')
+  const [groupId, setGroupId] = useState(() => getInitialGroupFilter())
   const [recipient, setRecipient] = useState('student')
   const [attendanceFormat, setAttendanceFormat] = useState('both')
   const [selected, setSelected] = useState(() => new Set())
@@ -90,10 +93,11 @@ export default function BulkMessagingTab() {
   const [edited, setEdited] = useState(false)
   const editorRef = useRef(null)
 
-  // Dispatch Progress State
+  // Dispatch Progress State (sequential queue with pause/cancel)
   const [isDispatching, setIsDispatching] = useState(false)
   const [progressState, setProgressState] = useState(null)
   const abortControllerRef = useRef(null)
+  const queueControllerRef = useRef(null)
 
   // Summary Result Modal State
   const [dispatchSummary, setDispatchSummary] = useState(null)
@@ -137,10 +141,13 @@ export default function BulkMessagingTab() {
 
   const phoneFor = (r) => (recipient === 'parent' ? r.parent_phone || r.phone : r.phone)
 
+  // Resolve the universal group filter (id -> name) for record filtering
+  const selectedGroupName = groups.find((g) => g.id === groupId)?.name || null
+
   // Filter records by grade and group
   const visible = records.filter((r) => {
     const matchYear = yearFilter === 'all' || String(r.year_id) === String(yearFilter)
-    const matchGroup = groupFilter === 'all' || (r.group_name || r.groupName) === groupFilter
+    const matchGroup = !selectedGroupName || (r.group_name || r.groupName) === selectedGroupName
     return matchYear && matchGroup
   })
 
@@ -203,50 +210,106 @@ export default function BulkMessagingTab() {
       return
     }
 
+    // Sequential dispatch queue: recipients are processed ONE BY ONE
+    // (Index + 1) with the configured delay between sends.
+    await handleStartDispatchWithMessages(messages)
+  }
+
+  /** Open the review sheet (manual links) without starting the queue. */
+  const handleReviewMessages = async () => {
+    if (!chosenRecords.length) {
+      alert(t('noSelection'))
+      return
+    }
+    const messages = buildBulkMessages(
+      chosenRecords.map((r) => ({ ...r, phone: phoneFor(r) })),
+      template,
+      { lang, attendance: attendanceFormat, recipientType: recipient }
+    )
+    if (!messages.length) {
+      alert(lang === 'ar' ? 'لا يوجد أرقام هواتف مسجلة للطلاب المحددين.' : 'No phone numbers found for the selected recipients.')
+      return
+    }
+    setReview(messages)
+  }
+
+  const handleCancelDispatch = () => {
+    if (abortControllerRef.current) abortControllerRef.current.abort()
+    if (queueControllerRef.current) queueControllerRef.current.cancel()
+    setIsDispatching(false)
+    setProgressState(null)
+    queueControllerRef.current = null
+  }
+
+  const handlePauseDispatch = () => {
+    queueControllerRef.current?.pause()
+    setProgressState((prev) => (prev ? { ...prev, currentStatus: 'paused' } : prev))
+  }
+
+  const handleResumeDispatch = () => {
+    queueControllerRef.current?.resume()
+    setProgressState((prev) => (prev ? { ...prev, currentStatus: 'resuming' } : prev))
+  }
+
+  /** Start the sequential dispatch from the review sheet (manual mode). */
+  const startSequentialFromReview = async () => {
+    if (!review || !review.length) return
+    const messages = review
+    setReview(null)
+    setDispatchSummary(null)
+    await handleStartDispatchWithMessages(messages)
+  }
+
+  /** Shared dispatcher used by both the main button and the review sheet. */
+  const handleStartDispatchWithMessages = async (messages) => {
+    if (!messages.length) {
+      alert(t('noSelection'))
+      return
+    }
     if (isWebhookConfigured()) {
       setIsDispatching(true)
+      queueControllerRef.current = createQueueController()
       abortControllerRef.current = new AbortController()
-
       try {
         const result = await dispatchBulkWhatsAppQueue(messages, {
           delayMs: delaySec * 1000,
-          onProgress: (prog) => {
-            setProgressState(prog)
-          },
+          onProgress: (prog) => setProgressState(prog),
           signal: abortControllerRef.current.signal,
+          controller: queueControllerRef.current,
         })
-
         setIsDispatching(false)
         setProgressState(null)
+        queueControllerRef.current = null
         setDispatchSummary(result)
       } catch (err) {
         console.error('Dispatch error:', err)
         alert(err.message)
         setIsDispatching(false)
         setProgressState(null)
+        queueControllerRef.current = null
       }
       return
     }
-
-    // Manual wa.me path -> open review sheet
-    setReview(messages)
-  }
-
-  const handleCancelDispatch = () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
+    // Manual sequential path
+    setIsDispatching(true)
+    queueControllerRef.current = createQueueController()
+    try {
+      const result = await dispatchWhatsAppLinksSequentially(messages, {
+        delayMs: delaySec * 1000,
+        onProgress: (prog) => setProgressState(prog),
+        controller: queueControllerRef.current,
+      })
       setIsDispatching(false)
       setProgressState(null)
+      queueControllerRef.current = null
+      setDispatchSummary(result)
+    } catch (err) {
+      console.error('Sequential dispatch error:', err)
+      alert(err.message)
+      setIsDispatching(false)
+      setProgressState(null)
+      queueControllerRef.current = null
     }
-  }
-
-  const openAll = () => {
-    if (!review) return
-    review.forEach((m, i) => {
-      if (m.url) {
-        setTimeout(() => window.open(m.url, '_blank', 'noopener,noreferrer'), i * 800)
-      }
-    })
   }
 
   const copyAllLinks = async () => {
@@ -328,21 +391,9 @@ export default function BulkMessagingTab() {
             </select>
           </div>
 
-          {/* Group filter (Feature 3 integration) */}
+          {/* Universal group filter (Feature 3 — shared GroupFilterSelect) */}
           <div>
-            <label className="block text-xs font-bold mb-1 text-slate-500">{t('filterByGroup')}</label>
-            <select
-              value={groupFilter}
-              onChange={(e) => setGroupFilter(e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs font-bold"
-            >
-              <option value="all">{t('allGroups')}</option>
-              {groups.map((g) => (
-                <option key={g.id} value={g.name}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
+            <GroupFilterSelect value={groupId} onChange={setGroupId} groups={groups} label={t('filterByGroup')} />
           </div>
 
           {/* Recipient Selector */}
@@ -376,17 +427,25 @@ export default function BulkMessagingTab() {
             </select>
           </div>
 
-          {/* Dispatch Action Button */}
-          <div className="flex items-end">
+          {/* Dispatch Action Buttons */}
+          <div className="flex items-end gap-2">
             <button
               onClick={handleStartDispatch}
               disabled={isDispatching || !chosenRecords.length}
-              className="w-full py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 transition"
+              className="flex-1 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 transition"
             >
               {isDispatching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               <span>
                 {t('sendBulk')} {chosenRecords.length > 0 ? `(${chosenRecords.length})` : ''}
               </span>
+            </button>
+            <button
+              onClick={handleReviewMessages}
+              disabled={isDispatching || !chosenRecords.length}
+              title={t('reviewMessages')}
+              className="px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold hover:text-yellow-500 transition disabled:opacity-50"
+            >
+              <ExternalLink className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -395,6 +454,11 @@ export default function BulkMessagingTab() {
         <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300 font-bold flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-amber-500 shrink-0" />
           <span>{t('safeDelayNotice')}</span>
+        </div>
+        {/* Sequential dispatch notice */}
+        <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-800 dark:text-emerald-300 font-bold flex items-center gap-2">
+          <Send className="w-4 h-4 text-emerald-500 shrink-0" />
+          <span>{t('sequentialDispatchHint')}</span>
         </div>
 
         {loadError && (
@@ -597,7 +661,7 @@ export default function BulkMessagingTab() {
         )}
       </div>
 
-      {/* ---------- Active Dispatch Progress Modal ---------- */}
+      {/* ---------- Active Dispatch Progress Modal (sequential queue) ---------- */}
       {isDispatching && progressState && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 max-w-md w-full space-y-6 shadow-2xl border border-slate-200 dark:border-zinc-800 text-center">
@@ -607,6 +671,10 @@ export default function BulkMessagingTab() {
 
             <div className="space-y-2">
               <h3 className="text-xl font-bold font-outfit">{t('sendingInProgress')}</h3>
+              {/* Live status: "Sending message 3 of 15..." */}
+              <p className="text-sm font-extrabold text-yellow-600 dark:text-yellow-400">
+                {t('sendingMessageOf')} {progressState.current} {t('selectedOf')} {progressState.total}...
+              </p>
               <p className="text-xs text-slate-500 font-mono">
                 {progressState.studentName} ({progressState.phone})
               </p>
@@ -615,7 +683,7 @@ export default function BulkMessagingTab() {
             {/* Progress Bar */}
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs font-bold text-slate-500">
-                <span>{progressState.current} of {progressState.total}</span>
+                <span>{progressState.current} / {progressState.total}</span>
                 <span>{progressState.percent}%</span>
               </div>
               <div className="h-3 w-full rounded-full bg-slate-200 dark:bg-zinc-800 overflow-hidden">
@@ -624,21 +692,69 @@ export default function BulkMessagingTab() {
                   style={{ width: `${progressState.percent}%` }}
                 />
               </div>
+              <div className="flex justify-between text-[11px] font-bold">
+                <span className="text-emerald-600 dark:text-emerald-400">
+                  ✓ {progressState.successfulCount ?? 0} {t('successfulDispatches').split(' ')[0]}
+                </span>
+                <span className="text-red-500">
+                  ✕ {progressState.failedCount ?? 0} {t('failedDispatches').split(' ')[0]}
+                </span>
+              </div>
             </div>
 
+            {/* Live status chip */}
             {progressState.currentStatus === 'waiting_delay' && (
               <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 text-xs font-bold flex items-center justify-center gap-1.5">
                 <Clock className="w-4 h-4 animate-spin" />
-                <span>Rate limit delay: waiting {delaySec}s before next dispatch...</span>
+                <span>{t('waitingNextStatus')} ({delaySec}s)</span>
+              </div>
+            )}
+            {progressState.currentStatus === 'opening' && (
+              <div className="p-2.5 rounded-xl bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 text-xs font-bold flex items-center justify-center gap-1.5">
+                <ExternalLink className="w-4 h-4 animate-pulse" />
+                <span>{t('openingChatStatus')}</span>
+              </div>
+            )}
+            {progressState.currentStatus === 'sent' && (
+              <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-xs font-bold flex items-center justify-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{t('bulkSentWebhook')} ✓</span>
+              </div>
+            )}
+            {progressState.currentStatus === 'paused' && (
+              <div className="p-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold flex items-center justify-center gap-1.5">
+                <Pause className="w-4 h-4" />
+                <span>{t('pausedStatus')}</span>
               </div>
             )}
 
-            <button
-              onClick={handleCancelDispatch}
-              className="px-6 py-2.5 rounded-xl bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-950/40 dark:text-red-300 text-xs font-bold transition"
-            >
-              Cancel Remaining
-            </button>
+            {/* Pause / Resume / Cancel queue controls */}
+            <div className="flex gap-2.5">
+              {progressState.currentStatus === 'paused' ? (
+                <button
+                  onClick={handleResumeDispatch}
+                  className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition"
+                >
+                  <Play className="w-4 h-4" />
+                  <span>{t('resumeQueue')}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handlePauseDispatch}
+                  className="flex-1 py-2.5 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300 text-xs font-bold flex items-center justify-center gap-1.5 transition"
+                >
+                  <Pause className="w-4 h-4" />
+                  <span>{t('pauseQueue')}</span>
+                </button>
+              )}
+              <button
+                onClick={handleCancelDispatch}
+                className="flex-1 py-2.5 rounded-xl bg-red-100 hover:bg-red-200 text-red-700 dark:bg-red-950/40 dark:text-red-300 text-xs font-bold flex items-center justify-center gap-1.5 transition"
+              >
+                <Ban className="w-4 h-4" />
+                <span>{t('cancelQueue')}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -805,11 +921,12 @@ export default function BulkMessagingTab() {
 
             <div className="flex flex-wrap gap-2">
               <button
-                onClick={openAll}
-                className="px-4 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 text-white text-xs font-bold flex items-center gap-2"
+                onClick={startSequentialFromReview}
+                disabled={isDispatching}
+                className="px-4 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-2"
               >
-                <ExternalLink className="w-4 h-4" />
-                <span>{t('openAllWhatsApp')}</span>
+                <Send className="w-4 h-4" />
+                <span>{t('sendSequentially')}</span>
               </button>
               <button
                 onClick={copyAllLinks}

@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import { ClipboardList, Upload, Send, Loader2, CheckCircle2, Award, Paperclip } from 'lucide-react'
+import { ClipboardList, Upload, Send, Loader2, CheckCircle2, Award, Paperclip, ChevronDown, ListChecks } from 'lucide-react'
 import { useLanguage } from '../lib/i18n.jsx'
 import { submitAssignment, uploadSubmissionFile } from '../lib/api'
 
-/** One assignment + this student's submission state and submit form. */
-export default function AssignmentSubmitCard({ assignment, submission, studentId, onSubmitted }) {
+/** One homework entry + this student's submission state and submit form. */
+export default function HomeworkSubmitCard({ assignment, submission, studentId, onSubmitted }) {
   const { t, lang } = useLanguage()
   const [open, setOpen] = useState(false)
+  const [showQuestions, setShowQuestions] = useState(false)
   const [content, setContent] = useState(submission?.content || '')
   const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -15,6 +16,8 @@ export default function AssignmentSubmitCard({ assignment, submission, studentId
 
   const isGraded = submission?.status === 'graded'
   const hasSubmitted = Boolean(submission)
+  const questions = assignment.questions || []
+  const totalPoints = assignment.totalPoints || assignment.max_score || 0
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -65,7 +68,8 @@ export default function AssignmentSubmitCard({ assignment, submission, studentId
             <p className="text-sm text-slate-600 dark:text-zinc-400 leading-relaxed">{assignment.description}</p>
           )}
           <p className="text-xs text-slate-500">
-            {t('dueDate')}: <span className="font-mono">{dueLabel}</span> · {t('maxScore')}: {assignment.max_score}
+            {t('dueDate')}: <span className="font-mono">{dueLabel}</span> · {t('totalPointsLabel')}: {totalPoints}
+            {questions.length > 0 && ` · ${questions.length} ${t('homeworkQuestionsCount')}`}
           </p>
         </div>
 
@@ -73,7 +77,7 @@ export default function AssignmentSubmitCard({ assignment, submission, studentId
           {isGraded ? (
             <span className="px-3 py-1.5 rounded-full text-xs font-extrabold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 flex items-center gap-1.5">
               <Award className="w-4 h-4" />
-              {submission.score} / {assignment.max_score}
+              {submission.score} / {totalPoints}
             </span>
           ) : hasSubmitted ? (
             <span className="px-3 py-1.5 rounded-full text-xs font-bold bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 flex items-center gap-1.5">
@@ -87,6 +91,56 @@ export default function AssignmentSubmitCard({ assignment, submission, studentId
           )}
         </div>
       </div>
+
+      {/* Questions preview (read-only) */}
+      {questions.length > 0 && (
+        <div className="rounded-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden">
+          <button
+            onClick={() => setShowQuestions((v) => !v)}
+            className="w-full px-4 py-2.5 bg-slate-50 dark:bg-black/40 text-xs font-bold flex items-center justify-between gap-2 hover:bg-slate-100 dark:hover:bg-zinc-800/50 transition"
+          >
+            <span className="flex items-center gap-1.5">
+              <ListChecks className="w-4 h-4 text-yellow-500" />
+              {t('homeworkQuestionsCount')} ({questions.length})
+            </span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${showQuestions ? 'rotate-180' : ''}`} />
+          </button>
+          {showQuestions && (
+            <div className="p-4 space-y-3 bg-white dark:bg-zinc-900">
+              {questions.map((q, qi) => {
+                const letter = q.answer || 'A'
+                return (
+                  <div key={q.id || qi} className="space-y-1.5">
+                    <p className="text-xs font-bold">
+                      <span className="text-yellow-500">{qi + 1}.</span> {q.question}
+                      <span className="text-[10px] text-slate-400 font-mono ms-1">({q.points || 1} {t('pointsLabel')})</span>
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {(q.options || []).map((opt, oi) => {
+                        const l = ['A', 'B', 'C', 'D'][oi]
+                        const isCorrect = isGraded && l === letter
+                        return (
+                          <div
+                            key={oi}
+                            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border ${
+                              isCorrect
+                                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+                                : 'bg-slate-50 dark:bg-black/40 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300'
+                            }`}
+                          >
+                            {opt}
+                            {isCorrect && ' ✓'}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {assignment.attachment_url && (
         <a

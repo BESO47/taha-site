@@ -9,9 +9,9 @@ import { useLanguage } from '../lib/i18n.jsx'
 import { YEARS, GOVERNORATES } from '../data/dummyData'
 import {
   fetchStudentAnalytics, fetchGradesForStudent, fetchAttendanceForStudent,
-  fetchAssignments, fetchSubmissionsForStudent, updateOwnProfile, fetchGroups
+  fetchHomeworkEntries, fetchSubmissionsForStudent, updateOwnProfile
 } from '../lib/api'
-import AssignmentSubmitCard from '../components/AssignmentSubmitCard.jsx'
+import HomeworkSubmitCard from '../components/HomeworkSubmitCard.jsx'
 
 function StatCard({ icon: Icon, label, value, suffix = '', accent = 'text-yellow-500' }) {
   return (
@@ -44,7 +44,7 @@ export default function StudentProfilePage() {
   const [analytics, setAnalytics] = useState(null)
   const [grades, setGrades] = useState([])
   const [attendance, setAttendance] = useState([])
-  const [assignments, setAssignments] = useState([])
+  const [homeworkEntries, setHomeworkEntries] = useState([])
   const [submissions, setSubmissions] = useState([])
 
   const [editing, setEditing] = useState(false)
@@ -56,17 +56,17 @@ export default function StudentProfilePage() {
     if (!user) return
     setLoading(true)
     try {
-      const [a, g, att, asg, subs] = await Promise.all([
+      const [a, g, att, hw, subs] = await Promise.all([
         fetchStudentAnalytics(user.id),
         fetchGradesForStudent(user.id),
         fetchAttendanceForStudent(user.id),
-        fetchAssignments({ yearId: profile?.year_id }),
+        fetchHomeworkEntries({ yearId: profile?.year_id }),
         fetchSubmissionsForStudent(user.id),
       ])
       setAnalytics(a)
       setGrades(g)
       setAttendance(att)
-      setAssignments(asg)
+      setHomeworkEntries(hw)
       setSubmissions(subs)
     } catch (err) {
       console.error('Failed to load profile data:', err)
@@ -107,7 +107,7 @@ export default function StudentProfilePage() {
     }
   }
 
-  const submissionFor = (assignmentId) => submissions.find((s) => s.assignment_id === assignmentId)
+  const submissionFor = (homeworkId) => submissions.find((s) => s.assignment_id === homeworkId)
 
   if (loading) {
     return (
@@ -121,7 +121,7 @@ export default function StudentProfilePage() {
   const TABS = [
     { id: 'overview', label: t('overviewTab'), icon: TrendingUp },
     { id: 'grades', label: t('gradesTab'), icon: Award },
-    { id: 'assignments', label: t('assignmentsTab'), icon: ClipboardList },
+    { id: 'homework', label: t('homeworkHistoryTab'), icon: ClipboardList },
     { id: 'attendance', label: t('attendanceTab'), icon: CalendarCheck },
   ]
 
@@ -335,19 +335,27 @@ export default function StudentProfilePage() {
         </div>
       )}
 
-      {/* ASSIGNMENTS */}
-      {tab === 'assignments' && (
+      {/* HOMEWORK HISTORY — grades saved by the teacher in the Homework
+          module (Submissions & Grading view) appear here automatically */}
+      {tab === 'homework' && (
         <div className="space-y-5">
-          {assignments.length === 0 ? (
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 border border-slate-200 dark:border-zinc-800 shadow-sm space-y-3">
+            <h3 className="font-bold text-lg flex items-center gap-2">
+              <ClipboardList className="w-5 h-5 text-yellow-500" />
+              <span>{t('homeworkHistorySection')}</span>
+            </h3>
+            <p className="text-xs text-slate-500">{t('homeworkHistoryHint')}</p>
+          </div>
+          {homeworkEntries.length === 0 ? (
             <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 border border-slate-200 dark:border-zinc-800">
-              <p className="text-center text-sm text-slate-500 py-10">{t('noAssignmentsYet')}</p>
+              <p className="text-center text-sm text-slate-500 py-10">{t('noHomeworkYet')}</p>
             </div>
           ) : (
-            assignments.map((a) => (
-              <AssignmentSubmitCard
-                key={a.id}
-                assignment={a}
-                submission={submissionFor(a.id)}
+            homeworkEntries.map((hw) => (
+              <HomeworkSubmitCard
+                key={hw.id}
+                assignment={hw}
+                submission={submissionFor(hw.id)}
                 studentId={user.id}
                 onSubmitted={loadAll}
               />

@@ -108,13 +108,15 @@ export function compileTemplate(template, values) {
 }
 
 /**
- * https://wa.me/<phone>?text=<urlencoded_message>
- * Phone is normalised with the standard helper (+20 default).
+ * https://web.whatsapp.com/send?phone=<phone>&text=<urlencoded_message>
+ * Phone is normalised with the standard helper (+20 default). WhatsApp Web
+ * is used for the sequential bulk-send queue so every recipient chat opens
+ * directly in the browser.
  */
 export function buildWhatsAppUrl(phone, message) {
   const to = normalizePhone(phone)
   if (!to) return null
-  return `https://wa.me/${to}?text=${encodeURIComponent(message)}`
+  return `https://web.whatsapp.com/send?phone=${to}&text=${encodeURIComponent(message)}`
 }
 
 /**

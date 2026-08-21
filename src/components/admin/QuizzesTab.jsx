@@ -4,8 +4,9 @@ import { useLanguage } from '../../lib/i18n.jsx'
 import { YEARS } from '../../data/dummyData'
 import {
   fetchQuizzes, createQuiz, deleteQuiz,
-  fetchGradesForQuiz, upsertGrade,
+  fetchGradesForQuiz, upsertGrade, fetchGroups,
 } from '../../lib/api'
+import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 
 const EMPTY_QUIZ = {
   title: '', description: '', yearId: '5', branch: 'الكهربية والمغناطيسية',
@@ -23,6 +24,15 @@ export default function QuizzesTab({ students }) {
   const [scores, setScores] = useState({})
   const [loadingGrades, setLoadingGrades] = useState(false)
   const [savingGrades, setSavingGrades] = useState(false)
+
+  // Universal group filter (Feature 3 — shared across all admin modules)
+  const [groupId, setGroupId] = useState(() => getInitialGroupFilter())
+  const [groups, setGroups] = useState([])
+  const selectedGroupName = groups.find((g) => g.id === groupId)?.name || null
+
+  useEffect(() => {
+    fetchGroups().then(setGroups).catch(() => {})
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -75,7 +85,11 @@ export default function QuizzesTab({ students }) {
   }
 
   const eligible = gradingQuiz
-    ? students.filter((s) => s.year_id === gradingQuiz.year_id)
+    ? students.filter((s) => {
+        const matchYear = s.year_id === gradingQuiz.year_id
+        const matchGroup = !selectedGroupName || (s.group_name || '') === selectedGroupName
+        return matchYear && matchGroup
+      })
     : []
 
   return (
@@ -177,14 +191,20 @@ export default function QuizzesTab({ students }) {
       {gradingQuiz && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 max-w-2xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <h3 className="font-bold text-lg flex items-center gap-2">
                 <Award className="w-5 h-5 text-yellow-500" />
                 <span>{gradingQuiz.title}</span>
               </h3>
-              <button onClick={() => setGradingQuiz(null)} className="text-slate-400 hover:text-slate-600">
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-3">
+                {/* Universal group filter (Feature 3) */}
+                <div className="w-52">
+                  <GroupFilterSelect value={groupId} onChange={setGroupId} groups={groups} compact />
+                </div>
+                <button onClick={() => setGradingQuiz(null)} className="text-slate-400 hover:text-slate-600">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             {loadingGrades ? (

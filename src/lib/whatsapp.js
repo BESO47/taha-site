@@ -230,6 +230,65 @@ export function openWhatsApp(phone, message) {
   return url
 }
 
+/**
+ * Build a web.whatsapp.com chat URL (desktop WhatsApp Web).
+ * https://web.whatsapp.com/send?phone=<international>&text=<urlencoded>
+ * Used by the sequential bulk-send queue so every recipient chat opens on
+ * WhatsApp Web directly.
+ */
+export function buildChatUrl(phone, message) {
+  const to = normalizePhone(phone)
+  if (!to) return null
+  return `https://web.whatsapp.com/send?phone=${to}&text=${encodeURIComponent(message)}`
+}
+
+/**
+ * Create a queue controller that lets a long-running dispatch loop be
+ * paused, resumed and cancelled safely from the UI.
+ *
+ * @returns {{ paused: boolean, cancelled: boolean, pause(): void, resume(): void, cancel(): void }}
+ */
+export function createQueueController() {
+  return {
+    paused: false,
+    cancelled: false,
+    _waiters: [],
+    pause() {
+      this.paused = true
+    },
+    resume() {
+      this.paused = false
+      this._waiters.splice(0).forEach((w) => w())
+    },
+    cancel() {
+      this.cancelled = true
+      this.resume()
+    },
+  }
+}
+
+/** Block the loop while the controller is paused (resolves on resume/cancel). */
+async function holdWhilePaused(controller) {
+  while (controller?.paused && !controller?.cancelled) {
+    await new Promise((resolve) => controller._waiters.push(resolve))
+  }
+}
+
+/**
+ * Interruptible sleep that respects pause/cancel. Returns false when the
+ * queue should stop (cancelled), true when the full delay elapsed.
+ */
+async function delayWithController(ms, controller) {
+  const step = 200
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    await holdWhilePaused(controller)
+    if (controller?.cancelled) return false
+    await sleep(Math.min(step, end - Date.now()))
+  }
+  return true
+}
+
 const WEBHOOK_URL = import.meta.env.VITE_WHATSAPP_WEBHOOK_URL
 
 export function isWebhookConfigured() {
@@ -400,19 +459,26 @@ export async function sendViaWebhook(phone, message, meta = {}) {
  * Sequential Bulk WhatsApp Dispatch Engine with Rate Limiting & Delays (2-5s per message)
  * Logs every dispatch result to the database and returns structured summary.
  *
+ * Recipients are processed ONE BY ONE (Index + 1) — the next message is only
+ * dispatched after the current one completes AND the configured delay elapses,
+ * so the chat context fully loads before proceeding. The queue can be paused,
+ * resumed and cancelled at any point via a controller.
+ *
  * @param {Array<{ phone: string, message: string, record?: object, studentName?: string, studentId?: string, target?: string }>} messages
  * @param {Object} options
- * @param {number} options.delayMs - delay between messages (default 2500ms)
- * @param {Function} options.onProgress - progress callback: ({ current, total, percent, currentRecipient, currentStatus, successCount, failedCount }) => void
- * @param {AbortSignal} options.signal - optional abort signal to cancel dispatch
+ * @param {number} options.delayMs - delay between messages (default 3000ms)
+ * @param {Function} options.onProgress - progress callback: ({ current, total, percent, studentName, phone, currentStatus, successfulCount, failedCount, delayRemaining }) => void
+ * @param {AbortSignal} options.signal - optional abort signal to cancel in-flight webhook fetch
+ * @param {Object} options.controller - queue controller from createQueueController() for pause/resume/cancel
  * @returns {Promise<{ total: number, sent: number, failed: number, successfulCount: number, failedCount: number, errors: Array, logs: Array }>}
  */
 export async function dispatchBulkWhatsAppQueue(
   messages = [],
   {
-    delayMs = 2500,
+    delayMs = 3000,
     onProgress = null,
     signal = null,
+    controller = null,
   } = {}
 ) {
   const total = messages.length
@@ -422,10 +488,14 @@ export async function dispatchBulkWhatsAppQueue(
   const logs = []
 
   for (let i = 0; i < total; i++) {
-    if (signal?.aborted) {
+    if (signal?.aborted || controller?.cancelled) {
       console.log('Bulk dispatch aborted by user.')
       break
     }
+
+    // Respect pause before starting the next recipient
+    await holdWhilePaused(controller)
+    if (signal?.aborted || controller?.cancelled) break
 
     const item = messages[i]
     const studentName = item.record?.full_name || item.studentName || 'Student'
@@ -557,7 +627,7 @@ export async function dispatchBulkWhatsAppQueue(
     }
 
     // Apply rate-limiting delay between outgoing messages if there are remaining messages
-    if (i < total - 1 && delayMs > 0 && !signal?.aborted) {
+    if (i < total - 1 && delayMs > 0 && !signal?.aborted && !controller?.cancelled) {
       onProgress?.({
         current: i + 1,
         total,
@@ -569,7 +639,149 @@ export async function dispatchBulkWhatsAppQueue(
         failedCount,
         delayRemaining: delayMs,
       })
-      await sleep(delayMs)
+      const completed = await delayWithController(delayMs, controller)
+      if (!completed) break
+    }
+  }
+
+  return {
+    total,
+    sent: successfulCount,
+    failed: failedCount,
+    successfulCount,
+    failedCount,
+    errors,
+    logs,
+  }
+}
+
+/**
+ * Sequential WhatsApp-Web link dispatcher (no webhook configured).
+ *
+ * Opens ONE https://web.whatsapp.com/send?phone=... chat at a time, waits for
+ * the configured delay so the chat context loads completely, then proceeds to
+ * the next recipient (Index + 1). Pause / Resume / Cancel supported through
+ * the controller. Every opened chat is recorded in the whatsapp_logs table.
+ *
+ * @param {Array<{ phone, message, url?, studentName?, studentId?, target? }>} messages
+ * @param {Object} options  { delayMs, onProgress, controller }
+ * @returns {Promise<{ total, sent, failed, successfulCount, failedCount, errors, logs }>}
+ */
+export async function dispatchWhatsAppLinksSequentially(
+  messages = [],
+  {
+    delayMs = 3000,
+    onProgress = null,
+    controller = null,
+  } = {}
+) {
+  const total = messages.length
+  let successfulCount = 0
+  let failedCount = 0
+  const errors = []
+  const logs = []
+
+  for (let i = 0; i < total; i++) {
+    await holdWhilePaused(controller)
+    if (controller?.cancelled) {
+      console.log('Sequential WhatsApp dispatch cancelled by user.')
+      break
+    }
+
+    const item = messages[i]
+    const studentName = item.studentName || item.record?.full_name || 'Student'
+    const studentId = item.studentId || item.record?.student_id || null
+    const recipientType = item.target || 'student'
+    const rawPhone = item.phone
+
+    onProgress?.({
+      current: i + 1,
+      total,
+      percent: Math.round(((i + 1) / total) * 100),
+      studentName,
+      phone: rawPhone,
+      currentStatus: 'opening',
+      successfulCount,
+      failedCount,
+    })
+
+    const validation = validatePhone(rawPhone)
+    const url = item.url || buildChatUrl(rawPhone, item.message)
+
+    if (!validation.isValid || !url) {
+      failedCount++
+      const errorMsg = validation.error || 'Invalid phone number format'
+      errors.push({ index: i + 1, studentName, phone: rawPhone, error: errorMsg })
+      await logWhatsAppDispatch({
+        studentId,
+        phone: rawPhone || 'unknown',
+        recipientName: studentName,
+        recipientType,
+        messageBody: item.message,
+        status: 'failed',
+        errorMessage: errorMsg,
+      })
+      logs.push({ studentName, phone: rawPhone, status: 'failed', error: errorMsg })
+      continue
+    }
+
+    try {
+      window.open(url, '_blank', 'noopener,noreferrer')
+      successfulCount++
+
+      await logWhatsAppDispatch({
+        studentId,
+        phone: validation.normalized,
+        recipientName: studentName,
+        recipientType,
+        messageBody: item.message,
+        status: 'sent',
+        errorMessage: null,
+      })
+
+      logs.push({ studentName, phone: validation.normalized, status: 'sent', error: null })
+
+      onProgress?.({
+        current: i + 1,
+        total,
+        percent: Math.round(((i + 1) / total) * 100),
+        studentName,
+        phone: validation.normalized,
+        currentStatus: 'sent',
+        successfulCount,
+        failedCount,
+      })
+    } catch (err) {
+      failedCount++
+      const errMsg = err.message || 'Could not open WhatsApp chat'
+      errors.push({ index: i + 1, studentName, phone: rawPhone, error: errMsg })
+      await logWhatsAppDispatch({
+        studentId,
+        phone: validation.normalized,
+        recipientName: studentName,
+        recipientType,
+        messageBody: item.message,
+        status: 'failed',
+        errorMessage: errMsg,
+      })
+      logs.push({ studentName, phone: validation.normalized, status: 'failed', error: errMsg })
+    }
+
+    // Configurable delay so the current chat loads before the next recipient
+    if (i < total - 1 && delayMs > 0 && !controller?.cancelled) {
+      onProgress?.({
+        current: i + 1,
+        total,
+        percent: Math.round(((i + 1) / total) * 100),
+        studentName,
+        phone: validation.normalized,
+        currentStatus: 'waiting_delay',
+        successfulCount,
+        failedCount,
+        delayRemaining: delayMs,
+      })
+      const completed = await delayWithController(delayMs, controller)
+      if (!completed) break
     }
   }
 

@@ -551,67 +551,331 @@ export async function deleteGrade(id) {
 }
 
 // =====================================================================
-// ASSIGNMENTS + GENERAL SUBMISSIONS
+// HOMEWORK ENTRIES  (Unified "Homework" module — formerly "Assignments")
 // =====================================================================
-export async function fetchAssignments({ yearId = null } = {}) {
+// A homework entry lives in the `assignments` table (extended with a
+// `questions` JSONB column + computed `total_points`) so the existing
+// `submissions` table, RLS policies and grading guard triggers keep
+// working unchanged. Each question = { id, question, options[4], answer,
+// points }. Total points = sum of question points (fallback: max_score).
+
+export function computeHomeworkTotalPoints(questions = []) {
+  const arr = Array.isArray(questions) ? questions : []
+  if (arr.length === 0) return 0
+  const sum = arr.reduce((acc, q) => acc + (Number(q.points) || 0), 0)
+  return Math.round(sum * 100) / 100
+}
+
+export function normalizeHomeworkEntry(row = {}) {
+  const questions = Array.isArray(row.questions) ? row.questions : []
+  const totalPoints = Number(row.total_points) > 0
+    ? Number(row.total_points)
+    : computeHomeworkTotalPoints(questions) || Number(row.max_score) || 0
+  return {
+    id: row.id,
+    title: row.title || '',
+    description: row.description || '',
+    yearId: row.year_id || '5',
+    branch: row.branch || '',
+    dueDate: row.due_date || null,
+    maxScore: Number(row.max_score) || totalPoints || 0,
+    totalPoints,
+    questions,
+    attachmentUrl: row.attachment_url || '',
+    isPublished: row.is_published !== false,
+    groupName: row.group_name || '',
+    createdBy: row.created_by || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null,
+  }
+}
+
+const HOMEWORK_ENTRY_COLUMNS =
+  'id, title, description, year_id, branch, due_date, max_score, total_points, questions, attachment_url, is_published, group_name, created_by, created_at, updated_at'
+
+/** Seed a couple of demo entries for the localStorage (no-Supabase) mode. */
+function seedHomeworkEntriesLocal() {
+  const seed = [
+    {
+      id: 'hw-1',
+      title: 'واجب التيار الكهربي وقانون أوم',
+      description: 'حل أسئلة الدرس الأول: شدة التيار وفرق الجهد والمقاومة الكهربية.',
+      year_id: '5',
+      branch: 'الكهربية والمغناطيسية',
+      due_date: null,
+      max_score: 10,
+      total_points: 10,
+      questions: [
+        { id: 'q1', question: 'وحدة قياس شدة التيار الكهربي في النظام الدولي هي:', options: ['A) الأمبير', 'B) الفولت', 'C) الأوم', 'D) الجول'], answer: 'A', points: 5 },
+        { id: 'q2', question: 'إذا زادت مساحة مقطع موصل للضعف مع ثبات طوله، فإن مقاومته:', options: ['A) تزداد للضعف', 'B) تقل إلى النصف', 'C) تظل ثابتة', 'D) تزداد 4 أمثال'], answer: 'B', points: 5 },
+      ],
+      attachment_url: '',
+      is_published: true,
+      group_name: '',
+      created_at: new Date().toISOString(),
+    },
+    {
+      id: 'hw-2',
+      title: 'Homework: Ohm\'s Law & Resistance',
+      description: 'Solve the Ohm\'s law problems and submit your answers.',
+      year_id: '6',
+      branch: 'Electromagnetism',
+      due_date: new Date(Date.now() + 7 * 864e5).toISOString(),
+      max_score: 15,
+      total_points: 15,
+      questions: [
+        { id: 'q1', question: 'Ohm\'s law states that current is directly proportional to:', options: ['A) Resistance', 'B) Voltage', 'C) Power', 'D) Charge'], answer: 'B', points: 5 },
+        { id: 'q2', question: 'SI unit of resistance is:', options: ['A) Ampere', 'B) Volt', 'C) Ohm', 'D) Joule'], answer: 'C', points: 5 },
+        { id: 'q3', question: 'A resistor dissipates power P. If current doubles, power becomes:', options: ['A) P', 'B) 2P', 'C) 4P', 'D) 8P'], answer: 'C', points: 5 },
+      ],
+      attachment_url: '',
+      is_published: true,
+      group_name: '',
+      created_at: new Date().toISOString(),
+    },
+  ]
+  try {
+    localStorage.setItem('physics_hub_homework_entries', JSON.stringify(seed))
+  } catch (_) {}
+  return seed
+}
+
+/**
+ * Fetch all homework entries (unified assignments+homework).
+ * @param {{ yearId?: string|null, groupName?: string|null, publishedOnly?: boolean }} opts
+ */
+export async function fetchHomeworkEntries({ yearId = null, groupName = null, publishedOnly = false } = {}) {
   if (isSupabaseConfigured()) {
     try {
-      let query = supabase.from('assignments').select('*').order('due_date', { ascending: false })
+      // select('*') keeps existing installs working even before the
+      // questions / total_points / group_name columns are added.
+      let query = supabase
+        .from('assignments')
+        .select('*')
+        .order('created_at', { ascending: false })
       if (yearId && yearId !== 'all') query = query.eq('year_id', String(yearId))
+      if (groupName && groupName !== 'all') query = query.eq('group_name', groupName)
+      if (publishedOnly) query = query.eq('is_published', true)
+
       const { data, error } = await query
-      if (!error && data) return data
+      if (!error && Array.isArray(data)) return data.map(normalizeHomeworkEntry)
     } catch (err) {
-      console.warn('fetchAssignments error:', err)
+      console.warn('fetchHomeworkEntries error:', err)
     }
   }
+
+  // LocalStorage fallback (demo / offline mode)
+  try {
+    const raw = localStorage.getItem('physics_hub_homework_entries')
+    let rows = raw ? JSON.parse(raw) : seedHomeworkEntriesLocal()
+    if (yearId && yearId !== 'all') rows = rows.filter((r) => r.year_id === String(yearId))
+    if (groupName && groupName !== 'all') rows = rows.filter((r) => (r.group_name || '') === groupName)
+    if (publishedOnly) rows = rows.filter((r) => r.is_published !== false)
+    return rows.map(normalizeHomeworkEntry)
+  } catch (_) {}
+
   return []
 }
 
-export async function createAssignment(payload) {
-  const { data, error } = await supabase
-    .from('assignments')
-    .insert([
-      {
-        title: payload.title,
-        description: payload.description || null,
-        year_id: String(payload.yearId || '5'),
-        branch: payload.branch || null,
-        due_date: payload.dueDate || null,
-        max_score: Number(payload.maxScore) || 100,
-        attachment_url: payload.attachmentUrl || null,
-        is_published: payload.isPublished !== false,
-      },
-    ])
-    .select()
-  if (error) throw error
-  return data?.[0]
+/** Alias kept for legacy callers (student profile, WhatsApp reports). */
+export async function fetchAssignments({ yearId = null } = {}) {
+  return fetchHomeworkEntries({ yearId })
 }
 
-export async function deleteAssignment(id) {
-  const { error } = await supabase.from('assignments').delete().eq('id', id)
-  if (error) throw error
+export async function createHomeworkEntry(payload) {
+  const questions = Array.isArray(payload.questions) ? payload.questions : []
+  const totalPoints = computeHomeworkTotalPoints(questions) || Number(payload.maxScore) || 0
+  const row = {
+    title: payload.title,
+    description: payload.description || null,
+    year_id: String(payload.yearId || '5'),
+    branch: payload.branch || null,
+    due_date: payload.dueDate || null,
+    max_score: totalPoints || Number(payload.maxScore) || 100,
+    total_points: totalPoints || null,
+    questions,
+    attachment_url: payload.attachmentUrl || null,
+    is_published: payload.isPublished !== false,
+    group_name: payload.groupName || null,
+  }
+
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.from('assignments').insert([row]).select(HOMEWORK_ENTRY_COLUMNS)
+    if (error) throw error
+    return normalizeHomeworkEntry(data?.[0])
+  }
+
+  // LocalStorage fallback
+  const current = await fetchHomeworkEntries()
+  const newEntry = { id: `hw_${Date.now()}`, ...row, created_at: new Date().toISOString() }
+  const updated = [newEntry, ...current.map((e) => ({
+    id: e.id, title: e.title, description: e.description, year_id: e.yearId,
+    branch: e.branch, due_date: e.dueDate, max_score: e.maxScore, total_points: e.totalPoints,
+    questions: e.questions, attachment_url: e.attachmentUrl, is_published: e.isPublished,
+    group_name: e.groupName, created_at: e.createdAt,
+  }))]
+  try {
+    localStorage.setItem('physics_hub_homework_entries', JSON.stringify(updated))
+  } catch (_) {}
+  return normalizeHomeworkEntry(newEntry)
 }
 
+export async function updateHomeworkEntry(id, payload) {
+  const questions = Array.isArray(payload.questions) ? payload.questions : []
+  const totalPoints = computeHomeworkTotalPoints(questions) || Number(payload.maxScore) || 0
+  const row = {
+    title: payload.title,
+    description: payload.description || null,
+    year_id: String(payload.yearId || '5'),
+    branch: payload.branch || null,
+    due_date: payload.dueDate || null,
+    max_score: totalPoints || Number(payload.maxScore) || 100,
+    total_points: totalPoints || null,
+    questions,
+    attachment_url: payload.attachmentUrl || null,
+    is_published: payload.isPublished !== false,
+    group_name: payload.groupName || null,
+  }
+
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase
+      .from('assignments')
+      .update(row)
+      .eq('id', id)
+      .select(HOMEWORK_ENTRY_COLUMNS)
+    if (error) throw error
+    return normalizeHomeworkEntry(data?.[0])
+  }
+
+  const current = await fetchHomeworkEntries()
+  const updated = current.map((e) => (e.id === id
+    ? { id: e.id, ...row, created_at: e.createdAt }
+    : { id: e.id, title: e.title, description: e.description, year_id: e.yearId, branch: e.branch, due_date: e.dueDate, max_score: e.maxScore, total_points: e.totalPoints, questions: e.questions, attachment_url: e.attachmentUrl, is_published: e.isPublished, group_name: e.groupName, created_at: e.createdAt }))
+  try {
+    localStorage.setItem('physics_hub_homework_entries', JSON.stringify(updated))
+  } catch (_) {}
+  return normalizeHomeworkEntry({ id, ...row })
+}
+
+export async function deleteHomeworkEntry(id) {
+  if (isSupabaseConfigured()) {
+    const { error } = await supabase.from('assignments').delete().eq('id', id)
+    if (error) throw error
+    return
+  }
+  const current = await fetchHomeworkEntries()
+  const filtered = current.filter((e) => e.id !== id)
+  try {
+    localStorage.setItem('physics_hub_homework_entries', JSON.stringify(filtered.map((e) => ({
+      id: e.id, title: e.title, description: e.description, year_id: e.yearId, branch: e.branch,
+      due_date: e.dueDate, max_score: e.maxScore, total_points: e.totalPoints, questions: e.questions,
+      attachment_url: e.attachmentUrl, is_published: e.isPublished, group_name: e.groupName, created_at: e.createdAt,
+    }))))
+  } catch (_) {}
+}
+
+/**
+ * Fetch all submissions for a homework entry (assignment).
+ */
 export async function fetchSubmissionsForAssignment(assignmentId) {
-  if (!isSupabaseConfigured()) return []
-  const { data, error } = await supabase
-    .from('submissions')
-    .select('*, profiles:student_id (full_name, phone, parent_phone, group_name)')
-    .eq('assignment_id', assignmentId)
-    .order('submitted_at', { ascending: false })
-  if (error) throw error
-  return data || []
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('submissions')
+        .select('*, profiles:student_id (id, full_name, phone, parent_phone, group_name, year_id)')
+        .eq('assignment_id', assignmentId)
+        .order('submitted_at', { ascending: false })
+      if (!error && Array.isArray(data)) return data
+      if (error) throw error
+    } catch (err) {
+      console.warn('fetchSubmissionsForAssignment error:', err)
+    }
+  }
+
+  // LocalStorage fallback for demo grading
+  try {
+    const raw = JSON.parse(localStorage.getItem('physics_hub_hw_grades') || '{}')
+    return (raw[String(assignmentId)] || []).map((s) => ({
+      ...s,
+      status: s.status || 'graded',
+      graded_at: s.graded_at || s.submitted_at || new Date().toISOString(),
+    }))
+  } catch (_) {}
+
+  return []
 }
+
+/**
+ * Grade a homework entry submission for a student. Upserts so the teacher
+ * can also award a grade to students who have not submitted yet.
+ * The saved grade automatically appears in the student's Homework History.
+ */
+export async function upsertHomeworkSubmissionGrade({ assignmentId, studentId, score, feedback }) {
+  const payload = {
+    assignment_id: assignmentId,
+    student_id: studentId,
+    content: null,
+    status: 'graded',
+    score: score === '' || score === null || score === undefined ? null : Number(score),
+    feedback: feedback || null,
+    graded_at: new Date().toISOString(),
+    submitted_at: new Date().toISOString(),
+  }
+
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase
+      .from('submissions')
+      .upsert(payload, { onConflict: 'assignment_id,student_id' })
+      .select()
+    if (error) throw error
+    return data?.[0]
+  }
+
+  try {
+    const key = String(assignmentId)
+    const raw = JSON.parse(localStorage.getItem('physics_hub_hw_grades') || '{}')
+    const list = (raw[key] || []).filter((s) => s.student_id !== studentId)
+    list.unshift({ id: `hwg_${Date.now()}`, ...payload })
+    raw[key] = list
+    localStorage.setItem('physics_hub_hw_grades', JSON.stringify(raw))
+  } catch (_) {}
+  return { id: `hwg_${Date.now()}`, ...payload }
+}
+
+// =====================================================================
+// SUBMISSIONS (unified homework submissions — uses the submissions table)
+// =====================================================================
 
 export async function fetchSubmissionsForStudent(studentId) {
-  if (!isSupabaseConfigured()) return []
-  const { data, error } = await supabase
-    .from('submissions')
-    .select('*, assignments:assignment_id (title, max_score, due_date)')
-    .eq('student_id', studentId)
-    .order('submitted_at', { ascending: false })
-  if (error) throw error
-  return data || []
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabase
+        .from('submissions')
+        .select('*, assignments:assignment_id (title, max_score, due_date)')
+        .eq('student_id', studentId)
+        .order('submitted_at', { ascending: false })
+      if (!error && data) return data
+      if (error) throw error
+    } catch (err) {
+      console.warn('fetchSubmissionsForStudent error:', err)
+    }
+  }
+
+  // LocalStorage fallback: demo grades saved from the Homework module
+  try {
+    const raw = JSON.parse(localStorage.getItem('physics_hub_hw_grades') || '{}')
+    const rows = []
+    Object.entries(raw).forEach(([assignmentId, list]) => {
+      list.forEach((s) => {
+        if (s.student_id === studentId) {
+          rows.push({ ...s, assignment_id: assignmentId, status: s.status || 'graded' })
+        }
+      })
+    })
+    return rows
+  } catch (_) {}
+
+  return []
 }
 
 export async function submitAssignment({ assignmentId, studentId, content, fileUrl }) {

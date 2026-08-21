@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Users, Search, Loader2, TrendingUp, X, Plus, Trash2, Tag, Check, Layers } from 'lucide-react'
+import { Users, Search, Loader2, TrendingUp, X, Plus, Trash2, Tag, Check, Layers, ClipboardList } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
 import { YEARS } from '../../data/dummyData'
 import { supabase } from '../../lib/supabase'
 import {
   fetchStudentAnalytics, fetchGradesForStudent, fetchAttendanceForStudent,
-  fetchGroups, createGroup, deleteGroup, updateStudentGroup
+  fetchGroups, createGroup, deleteGroup, updateStudentGroup,
+  fetchHomeworkEntries, fetchSubmissionsForStudent,
 } from '../../lib/api'
 import WhatsAppReportButton from '../WhatsAppReportButton.jsx'
+import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 
 function Bar({ value, color = 'bg-yellow-400' }) {
   const v = Math.max(0, Math.min(100, Number(value) || 0))
@@ -22,10 +24,12 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
   const { t, lang } = useLanguage()
   const [search, setSearch] = useState('')
   const [yearFilter, setYearFilter] = useState('all')
-  const [groupFilter, setGroupFilter] = useState('all')
+  // Universal group filter (Feature 3) — shared GroupFilterSelect + ?groupId=
+  const [groupId, setGroupId] = useState(() => getInitialGroupFilter())
 
   // Group Management State
   const [groups, setGroups] = useState([])
+  const selectedGroupName = groups?.find((g) => g.id === groupId)?.name || null
   const [showManageGroups, setShowManageGroups] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
   const [newGroupYear, setNewGroupYear] = useState('5')
@@ -62,11 +66,11 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
     const matchY = yearFilter === 'all' || s.year_id === yearFilter
     const sGroup = s.group_name || s.groupName || ''
     const matchG =
-      groupFilter === 'all'
+      groupId === 'all' || groupId === null
         ? true
-        : groupFilter === 'none'
+        : groupId === 'none'
         ? !sGroup || sGroup === ''
-        : sGroup === groupFilter
+        : selectedGroupName && sGroup === selectedGroupName
 
     return matchQ && matchY && matchG
   })
@@ -127,12 +131,14 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
     setDetail(s)
     setLoadingDetail(true)
     try {
-      const [a, g, att] = await Promise.all([
+      const [a, g, att, hw, subs] = await Promise.all([
         fetchStudentAnalytics(s.id),
         fetchGradesForStudent(s.id),
         fetchAttendanceForStudent(s.id),
+        fetchHomeworkEntries({ yearId: s.year_id }),
+        fetchSubmissionsForStudent(s.id),
       ])
-      setDetailData({ analytics: a || {}, grades: g, attendance: att })
+      setDetailData({ analytics: a || {}, grades: g, attendance: att, homeworkEntries: hw, homeworkSubmissions: subs })
     } catch (err) {
       console.error(err)
     } finally {
@@ -189,22 +195,9 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
             </select>
           </div>
 
-          {/* Group Filter */}
+          {/* Universal Group Filter (Feature 3 — shared GroupFilterSelect) */}
           <div>
-            <label className="block text-xs font-bold text-slate-500 mb-1">{t('filterByGroup')}</label>
-            <select
-              value={groupFilter}
-              onChange={(e) => setGroupFilter(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs font-bold"
-            >
-              <option value="all">{t('allGroups')}</option>
-              <option value="none">{t('noGroupAssigned')}</option>
-              {groups.map((g) => (
-                <option key={g.id} value={g.name}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
+            <GroupFilterSelect value={groupId} onChange={setGroupId} groups={groups} includeNone />
           </div>
 
           {/* Name / Phone Search */}
@@ -495,6 +488,49 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                           {a.session_date?.slice(5)}
                         </span>
                       ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Homework History — grades recorded in the Homework module
+                    sync automatically into each student's profile */}
+                <div>
+                  <h4 className="font-bold text-sm mb-2 flex items-center gap-1.5">
+                    <ClipboardList className="w-4 h-4 text-yellow-500" />
+                    <span>{t('homeworkHistorySection')}</span>
+                  </h4>
+                  {detailData.homeworkEntries.length === 0 ? (
+                    <p className="text-xs text-slate-500">{t('noHomeworkYet')}</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {detailData.homeworkEntries.map((hw) => {
+                        const sub = detailData.homeworkSubmissions.find((x) => x.assignment_id === hw.id)
+                        const total = hw.totalPoints || hw.maxScore || 0
+                        const graded = sub?.status === 'graded' && sub?.score != null
+                        return (
+                          <div key={hw.id} className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-50 dark:bg-black/50 text-xs">
+                            <div className="min-w-0">
+                              <span className="font-bold truncate block">{hw.title}</span>
+                              <span className="text-[10px] text-slate-400">
+                                {sub ? new Date(sub.submitted_at || sub.graded_at || Date.now()).toLocaleDateString(lang === 'ar' ? 'ar-EG' : 'en-GB') : t('notSubmittedShort')}
+                              </span>
+                            </div>
+                            {graded ? (
+                              <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 font-extrabold font-mono shrink-0">
+                                {sub.score} / {total}
+                              </span>
+                            ) : sub ? (
+                              <span className="px-2.5 py-1 rounded-lg bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 font-bold shrink-0">
+                                {t('submitted')}
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 dark:bg-zinc-800 dark:text-zinc-400 font-bold shrink-0">
+                                {t('notSubmitted')}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
                 </div>
