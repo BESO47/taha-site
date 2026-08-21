@@ -14,7 +14,16 @@ import { OPTION_LETTERS, toOptionLetter } from '../lib/grading'
  * teacher's answer key (server-side when Supabase is configured), so the
  * student instantly sees total correct, total incorrect and the percentage.
  */
-export default function HomeworkSubmitCard({ assignment, submission, studentId, onSubmitted }) {
+export default function HomeworkSubmitCard({
+  assignment,
+  submission,
+  studentId,
+  onSubmitted,
+  /** Extra nodes rendered next to the score pill (e.g. status badges). */
+  headerExtra = null,
+  /** Extra nodes rendered at the bottom (e.g. the gated explanation video). */
+  footer = null,
+}) {
   const { t, lang } = useLanguage()
   const [open, setOpen] = useState(false)
   const [showQuestions, setShowQuestions] = useState(false)
@@ -110,7 +119,8 @@ export default function HomeworkSubmitCard({ assignment, submission, studentId, 
           </p>
         </div>
 
-        <div className="shrink-0">
+        <div className="shrink-0 flex items-center gap-2 flex-wrap justify-end">
+          {headerExtra}
           {isGraded || summary ? (
             <span className="px-3 py-1.5 rounded-full text-xs font-extrabold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 flex items-center gap-1.5">
               <Award className="w-4 h-4" />
@@ -321,6 +331,8 @@ export default function HomeworkSubmitCard({ assignment, submission, studentId, 
           )}
         </>
       )}
+
+      {footer}
     </div>
   )
 }

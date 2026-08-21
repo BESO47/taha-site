@@ -1,9 +1,37 @@
-# Homework marking & grading
+# Homework marking, grading & the two student pages
 
 Grades on Physics Hub are produced by **comparing each student answer with the
 teacher's answer key**. Handing work in is never a grade by itself: an empty or
 fully wrong paper scores 0 %, and every score is weighted by the points assigned
 to each question.
+
+## Student-facing structure: two separate pages
+
+| Page | Route | Contains | Never contains |
+|---|---|---|---|
+| **Lessons** | `/lessons` (+ `/lessons/:id`) | Video lessons, summaries/materials, extra video resources, per-module progress | Homework assignments, answer sheets, homework links |
+| **Homework** | `/homework` | Assignments, answer sheet + submission, automatic marking, status badges, gated explanation video | Course lesson content |
+
+Both are reachable from the main menu (`Lessons` and `Homework` are separate
+navigation entries; the Lessons entry also keeps the per-grade dropdown).
+`/videos` now redirects to `/lessons`.
+
+### Homework lifecycle & the unlock mechanic
+
+```
+Pending ──submit──▶ Submitted ──graded──▶ Graded ──▶ 🔓 Explanation video unlocked
+             (MCQ homework is marked instantly, so it goes straight to Graded)
+```
+
+* Every card shows a status badge — **Pending**, **Submitted**, **Graded** — plus a
+  **Video unlocked / Video locked** chip when the assignment has an explanation video.
+* The explanation video URL lives on `assignments.explanation_video_url`
+  (set it in Admin → Homework → entry editor).
+* While the work is not graded the player is **not mounted at all**: the locked
+  state renders a blurred placeholder, so the video URL never reaches the DOM
+  (`src/components/HomeworkExplanationVideo.jsx`).
+* Lesson progress on the Lessons page is tracked per student in
+  `src/lib/progress.js` (localStorage: watched / completed, per module and overall).
 
 ## Where the logic lives
 
@@ -12,7 +40,8 @@ to each question.
 | Marking engine (shared) | [`src/lib/grading.js`](./src/lib/grading.js) | Pure functions: normalise answers, compare with the key, produce the breakdown |
 | Data layer | [`src/lib/api.js`](./src/lib/api.js) | `submitHomeworkSubmission`, `submitAssignmentAnswers`, `autoGradeAssignmentSubmissions`, `regradeLessonSubmissions` |
 | Authoritative marker (SQL) | [`homework-grading.sql`](./homework-grading.sql) | `grade_assignment_submission()`, `grade_lesson_homework()`, `regrade_assignment()`, `regrade_lesson_homework()` |
-| Student UI | `HomeworkSubmitCard.jsx`, `HomeworkPage.jsx`, `LessonDetailPage.jsx` | Answer sheet + instant result |
+| Student UI | `pages/HomeworkPage.jsx`, `HomeworkSubmitCard.jsx`, `HomeworkExplanationVideo.jsx`, `HomeworkStatusBadge.jsx` | Answer sheet, instant result, status badges, gated video |
+| Lessons UI | `pages/LessonsPage.jsx`, `pages/LessonDetailPage.jsx`, `lib/progress.js` | Content delivery + progress (no homework) |
 | Teacher UI | `components/admin/HomeworkTab.jsx` | Correct/incorrect columns, per-question review, “Auto-mark all papers” |
 
 ## The result object

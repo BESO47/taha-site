@@ -693,6 +693,10 @@ export function normalizeHomeworkEntry(row = {}) {
     totalPoints,
     questions,
     attachmentUrl: row.attachment_url || '',
+    // Explanation video: unlocked for the student only once their
+    // submission is graded (see pages/HomeworkPage.jsx).
+    explanationVideoUrl: row.explanation_video_url || '',
+    explanationVideoTitle: row.explanation_video_title || '',
     isPublished: row.is_published !== false,
     groupName: row.group_name || '',
     createdBy: row.created_by || null,
@@ -702,7 +706,17 @@ export function normalizeHomeworkEntry(row = {}) {
 }
 
 const HOMEWORK_ENTRY_COLUMNS =
-  'id, title, description, year_id, branch, due_date, max_score, total_points, questions, attachment_url, is_published, group_name, created_by, created_at, updated_at'
+  'id, title, description, year_id, branch, due_date, max_score, total_points, questions, ' +
+  'attachment_url, explanation_video_url, explanation_video_title, is_published, group_name, ' +
+  'created_by, created_at, updated_at'
+
+/** Columns added by homework-grading.sql — dropped when the DB is older. */
+function stripEntryVideoColumns(row) {
+  const clone = { ...row }
+  delete clone.explanation_video_url
+  delete clone.explanation_video_title
+  return clone
+}
 
 /** Seed a couple of demo entries for the localStorage (no-Supabase) mode. */
 function seedHomeworkEntriesLocal() {
@@ -721,6 +735,8 @@ function seedHomeworkEntriesLocal() {
         { id: 'q2', question: 'إذا زادت مساحة مقطع موصل للضعف مع ثبات طوله، فإن مقاومته:', options: ['A) تزداد للضعف', 'B) تقل إلى النصف', 'C) تظل ثابتة', 'D) تزداد 4 أمثال'], answer: 'B', points: 5 },
       ],
       attachment_url: '',
+      explanation_video_url: 'https://www.youtube.com/watch?v=8j0UDid94kU',
+      explanation_video_title: 'شرح حل واجب التيار الكهربي وقانون أوم',
       is_published: true,
       group_name: '',
       created_at: new Date().toISOString(),
@@ -740,6 +756,8 @@ function seedHomeworkEntriesLocal() {
         { id: 'q3', question: 'A resistor dissipates power P. If current doubles, power becomes:', options: ['A) P', 'B) 2P', 'C) 4P', 'D) 8P'], answer: 'C', points: 5 },
       ],
       attachment_url: '',
+      explanation_video_url: 'https://www.youtube.com/watch?v=8j0UDid94kU',
+      explanation_video_title: 'Ohm\'s Law homework walkthrough',
       is_published: true,
       group_name: '',
       created_at: new Date().toISOString(),
@@ -806,12 +824,20 @@ export async function createHomeworkEntry(payload) {
     total_points: totalPoints || null,
     questions,
     attachment_url: payload.attachmentUrl || null,
+    explanation_video_url: payload.explanationVideoUrl || null,
+    explanation_video_title: payload.explanationVideoTitle || null,
     is_published: payload.isPublished !== false,
     group_name: payload.groupName || null,
   }
 
   if (isSupabaseConfigured()) {
-    const { data, error } = await supabase.from('assignments').insert([row]).select(HOMEWORK_ENTRY_COLUMNS)
+    let { data, error } = await supabase.from('assignments').insert([row]).select('*')
+    if (error && isMissingColumnError(error)) {
+      console.warn('assignments is missing the explanation-video columns — run homework-grading.sql.')
+      const legacy = await supabase.from('assignments').insert([stripEntryVideoColumns(row)]).select('*')
+      data = legacy.data
+      error = legacy.error
+    }
     if (error) throw error
     return normalizeHomeworkEntry(data?.[0])
   }
@@ -822,7 +848,9 @@ export async function createHomeworkEntry(payload) {
   const updated = [newEntry, ...current.map((e) => ({
     id: e.id, title: e.title, description: e.description, year_id: e.yearId,
     branch: e.branch, due_date: e.dueDate, max_score: e.maxScore, total_points: e.totalPoints,
-    questions: e.questions, attachment_url: e.attachmentUrl, is_published: e.isPublished,
+    questions: e.questions, attachment_url: e.attachmentUrl,
+    explanation_video_url: e.explanationVideoUrl, explanation_video_title: e.explanationVideoTitle,
+    is_published: e.isPublished,
     group_name: e.groupName, created_at: e.createdAt,
   }))]
   try {
@@ -844,16 +872,24 @@ export async function updateHomeworkEntry(id, payload) {
     total_points: totalPoints || null,
     questions,
     attachment_url: payload.attachmentUrl || null,
+    explanation_video_url: payload.explanationVideoUrl || null,
+    explanation_video_title: payload.explanationVideoTitle || null,
     is_published: payload.isPublished !== false,
     group_name: payload.groupName || null,
   }
 
   if (isSupabaseConfigured()) {
-    const { data, error } = await supabase
-      .from('assignments')
-      .update(row)
-      .eq('id', id)
-      .select(HOMEWORK_ENTRY_COLUMNS)
+    let { data, error } = await supabase.from('assignments').update(row).eq('id', id).select('*')
+    if (error && isMissingColumnError(error)) {
+      console.warn('assignments is missing the explanation-video columns — run homework-grading.sql.')
+      const legacy = await supabase
+        .from('assignments')
+        .update(stripEntryVideoColumns(row))
+        .eq('id', id)
+        .select('*')
+      data = legacy.data
+      error = legacy.error
+    }
     if (error) throw error
     return normalizeHomeworkEntry(data?.[0])
   }
@@ -861,7 +897,7 @@ export async function updateHomeworkEntry(id, payload) {
   const current = await fetchHomeworkEntries()
   const updated = current.map((e) => (e.id === id
     ? { id: e.id, ...row, created_at: e.createdAt }
-    : { id: e.id, title: e.title, description: e.description, year_id: e.yearId, branch: e.branch, due_date: e.dueDate, max_score: e.maxScore, total_points: e.totalPoints, questions: e.questions, attachment_url: e.attachmentUrl, is_published: e.isPublished, group_name: e.groupName, created_at: e.createdAt }))
+    : { id: e.id, title: e.title, description: e.description, year_id: e.yearId, branch: e.branch, due_date: e.dueDate, max_score: e.maxScore, total_points: e.totalPoints, questions: e.questions, attachment_url: e.attachmentUrl, explanation_video_url: e.explanationVideoUrl, explanation_video_title: e.explanationVideoTitle, is_published: e.isPublished, group_name: e.groupName, created_at: e.createdAt }))
   try {
     localStorage.setItem('physics_hub_homework_entries', JSON.stringify(updated))
   } catch (_) {}
@@ -880,7 +916,9 @@ export async function deleteHomeworkEntry(id) {
     localStorage.setItem('physics_hub_homework_entries', JSON.stringify(filtered.map((e) => ({
       id: e.id, title: e.title, description: e.description, year_id: e.yearId, branch: e.branch,
       due_date: e.dueDate, max_score: e.maxScore, total_points: e.totalPoints, questions: e.questions,
-      attachment_url: e.attachmentUrl, is_published: e.isPublished, group_name: e.groupName, created_at: e.createdAt,
+      attachment_url: e.attachmentUrl, explanation_video_url: e.explanationVideoUrl,
+      explanation_video_title: e.explanationVideoTitle, is_published: e.isPublished,
+      group_name: e.groupName, created_at: e.createdAt,
     }))))
   } catch (_) {}
 }
@@ -1621,4 +1659,61 @@ export async function fetchBulkMessagingReport({ yearId = null, groupName = null
   )
 
   return rows
+}
+
+// =====================================================================
+// STUDENT HOMEWORK FEED  (used by pages/HomeworkPage.jsx)
+// =====================================================================
+// One call that returns every homework entry a student can see together
+// with their own submission, the marking result and whether the
+// explanation video has been unlocked (= the submission is graded).
+
+/** Status of one homework entry for one student. */
+export function deriveHomeworkStatus(entry, submission) {
+  if (!submission) return 'pending'
+  if (submission.status === 'graded' && submission.score != null) return 'graded'
+  if (submission.status === 'returned') return 'returned'
+  return 'submitted'
+}
+
+/**
+ * @param {{ studentId:string, yearId?:string|null, groupName?:string|null }} opts
+ * @returns {Promise<Array<{ entry, submission, status, isGraded, hasVideo,
+ *                           videoUnlocked, percentage, correctCount, incorrectCount }>>}
+ */
+export async function fetchStudentHomeworkFeed({ studentId, yearId = null, groupName = null } = {}) {
+  const entries = await fetchHomeworkEntries({ yearId, publishedOnly: true })
+
+  const submissions = studentId ? await fetchSubmissionsForStudent(studentId) : []
+  const byAssignment = new Map()
+  submissions.forEach((s) => byAssignment.set(String(s.assignment_id), s))
+
+  return entries
+    // A homework entry is either general (no group) or assigned to the
+    // student's own group.
+    .filter((e) => !e.groupName || !groupName || e.groupName === groupName)
+    .map((entry) => {
+      const raw = byAssignment.get(String(entry.id)) || null
+      const submission = raw ? normalizeAssignmentSubmission(raw, entry) : null
+      const status = deriveHomeworkStatus(entry, submission)
+      const isGraded = status === 'graded'
+      const hasVideo = Boolean(entry.explanationVideoUrl)
+
+      return {
+        entry,
+        submission,
+        status,
+        isGraded,
+        hasVideo,
+        // GATED ACCESS: the explanation video only opens once the work is graded.
+        videoUnlocked: hasVideo && isGraded,
+        percentage: submission?.percentage ?? null,
+        correctCount: submission?.correctCount ?? null,
+        incorrectCount: submission?.incorrectCount ?? null,
+        score: submission?.score ?? null,
+        totalPoints: entry.totalPoints || entry.maxScore || 0,
+        submittedAt: submission?.submitted_at || null,
+        gradedAt: submission?.graded_at || null,
+      }
+    })
 }

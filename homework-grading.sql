@@ -16,6 +16,8 @@
 --   4. Adds `regrade_assignment()` / `regrade_lesson_homework()` so the
 --      teacher can re-mark all stored papers after fixing the key.
 --   5. Teaches the anti-cheat trigger to allow the auto-marker.
+--   6. Adds `assignments.explanation_video_url/_title` — the homework
+--      explanation video that unlocks once a submission is graded.
 --
 -- HOW TO RUN
 --   Supabase Dashboard -> SQL Editor -> New query -> paste -> Run.
@@ -33,6 +35,11 @@ ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS total_points     NUMERIC
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS percentage       NUMERIC(5,2);
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS breakdown        JSONB   DEFAULT '[]'::jsonb;
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS auto_graded      BOOLEAN NOT NULL DEFAULT false;
+
+-- Homework explanation video: shown on the Homework page and unlocked for a
+-- student only once their submission is graded (see src/pages/HomeworkPage.jsx).
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS explanation_video_url   TEXT;
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS explanation_video_title TEXT;
 
 ALTER TABLE public.homework_submissions ADD COLUMN IF NOT EXISTS correct_count    INTEGER;
 ALTER TABLE public.homework_submissions ADD COLUMN IF NOT EXISTS incorrect_count  INTEGER;

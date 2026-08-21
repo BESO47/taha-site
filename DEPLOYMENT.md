@@ -13,7 +13,7 @@ The site is a Vite single-page application backed by Supabase. Vercel builds the
 1. Open **Supabase Dashboard → SQL Editor → New query**.
 2. Copy all of [`schema.sql`](./schema.sql), paste it into the query, and select **Run**. The script is idempotent, so it can also update an existing installation.
 3. For the bulk WhatsApp messaging feature (latest quiz score / homework / attendance per student), also run [`bulk-messaging.sql`](./bulk-messaging.sql) once. It adds the `bulk_messaging_report` and `student_progress_log` RPCs; the UI falls back to assembling the same data client-side if the RPC is not deployed.
-4. Run [`homework-grading.sql`](./homework-grading.sql) once. It adds the answer-key marking columns (`correct_count`, `incorrect_count`, `percentage`, `breakdown`, …) plus the `grade_assignment_submission` / `grade_lesson_homework` RPCs that mark submissions server-side. See [`HOMEWORK_GRADING.md`](./HOMEWORK_GRADING.md). Until it is applied the app still works, marking answers in the browser instead.
+4. Run [`homework-grading.sql`](./homework-grading.sql) once. It adds the answer-key marking columns (`correct_count`, `incorrect_count`, `percentage`, `breakdown`, …) plus the `grade_assignment_submission` / `grade_lesson_homework` RPCs that mark submissions server-side, and the `assignments.explanation_video_url` column used by the gated homework explanation videos. See [`HOMEWORK_GRADING.md`](./HOMEWORK_GRADING.md). Until it is applied the app still works, marking answers in the browser instead.
 5. In **Project Settings → API**, copy:
    - the project URL;
    - the public `anon` key (called the publishable key in newer Supabase projects).

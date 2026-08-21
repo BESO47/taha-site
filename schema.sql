@@ -292,6 +292,9 @@ CREATE TABLE IF NOT EXISTS public.assignments (
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS questions JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS total_points NUMERIC(8,2);
 ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS group_name TEXT;
+-- Homework explanation video (unlocked for the student once graded)
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS explanation_video_url   TEXT;
+ALTER TABLE public.assignments ADD COLUMN IF NOT EXISTS explanation_video_title TEXT;
 
 CREATE INDEX IF NOT EXISTS assignments_year_id_idx   ON public.assignments(year_id);
 CREATE INDEX IF NOT EXISTS assignments_group_name_idx ON public.assignments(group_name);

@@ -50,7 +50,12 @@ export default function Navbar() {
   }
 
   const isActive = (path) => location.pathname === path
-  const isYearActive = location.pathname.startsWith('/years/')
+  // "Lessons" covers the lessons hub, a single lesson and the year pages.
+  const isLessonsActive =
+    location.pathname === '/lessons' ||
+    location.pathname.startsWith('/lessons/') ||
+    location.pathname.startsWith('/years/')
+  const isHomeworkActive = location.pathname.startsWith('/homework')
 
   return (
     <nav className="navbar z-50 sticky top-2 smooth bg-black/90 text-white mx-3 rounded-2xl shadow-2xl border border-yellow-400/30 backdrop-blur-md">
@@ -85,18 +90,27 @@ export default function Navbar() {
                 <span>{t('navHome')}</span>
               </Link>
 
-              {/* Lessons dropdown by year */}
-              <div className="relative" ref={lessonsMenuRef}>
+              {/* Lessons — video lessons & materials only */}
+              <div className="relative flex items-center" ref={lessonsMenuRef}>
+                <Link
+                  to="/lessons"
+                  className={`ltr:rounded-l-xl rtl:rounded-r-xl px-3.5 py-2 transition flex items-center gap-1.5 ${isLessonsActive
+                    ? 'bg-yellow-400/20 text-yellow-400 border border-yellow-400/30 ltr:border-r-0 rtl:border-l-0 shadow-inner'
+                    : 'text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400'
+                    }`}
+                >
+                  <BookOpen className="w-4 h-4" />
+                  <span>{t('navLessons')}</span>
+                </Link>
                 <button
                   onClick={() => setLessonsMenuOpen((v) => !v)}
-                  className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 ${isYearActive
-                    ? 'bg-yellow-400/20 text-yellow-400 border border-yellow-400/30 shadow-inner'
+                  aria-label={t('navLessons')}
+                  className={`ltr:rounded-r-xl rtl:rounded-l-xl px-2 py-2 transition flex items-center ${isLessonsActive
+                    ? 'bg-yellow-400/20 text-yellow-400 border border-yellow-400/30 ltr:border-l-0 rtl:border-r-0 shadow-inner'
                     : 'text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400'
                     }`}
                   aria-expanded={lessonsMenuOpen}
                 >
-                  <BookOpen className="w-4 h-4" />
-                  <span>{t('navLessons')}</span>
                   <ChevronDown className={`w-3.5 h-3.5 transition-transform ${lessonsMenuOpen ? 'rotate-180' : ''}`} />
                 </button>
 
@@ -110,6 +124,14 @@ export default function Navbar() {
                       className={`absolute top-full mt-2 w-72 bg-zinc-900 rounded-2xl shadow-2xl border border-yellow-400/30 p-2 text-white z-50 max-h-80 overflow-y-auto ${lang === 'ar' ? 'right-0' : 'left-0'
                         }`}
                     >
+                      <Link
+                        to="/lessons"
+                        className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-sm font-bold bg-yellow-400/10 text-yellow-300 hover:bg-yellow-400/20 transition mb-1"
+                      >
+                        <BookOpen className="w-4 h-4" />
+                        <span>{t('allLessonsMenu')}</span>
+                      </Link>
+                      <div className="h-px bg-zinc-800 my-1" />
                       {YEARS.map((y) => (
                         <Link
                           key={y.id}
@@ -141,7 +163,7 @@ export default function Navbar() {
               {session && (
                 <Link
                   to="/homework"
-                  className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 ${isActive('/homework') || isActive('/videos')
+                  className={`px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 ${isHomeworkActive
                     ? 'bg-yellow-400/20 text-yellow-400 border border-yellow-400/30 shadow-inner'
                     : 'text-zinc-300 hover:bg-zinc-800 hover:text-yellow-400'
                     }`}
@@ -294,17 +316,26 @@ export default function Navbar() {
             </Link>
 
             <div>
-              <button
-                onClick={() => setMobileLessonsOpen((v) => !v)}
-                className="w-full px-4 py-2.5 rounded-xl text-sm font-bold text-white hover:bg-zinc-800 hover:text-yellow-400 flex items-center justify-between gap-2"
-                aria-expanded={mobileLessonsOpen}
-              >
-                <span className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <Link
+                  to="/lessons"
+                  className={`flex-1 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 ${isLessonsActive
+                    ? 'bg-yellow-400/20 text-yellow-400'
+                    : 'text-white hover:bg-zinc-800 hover:text-yellow-400'
+                    }`}
+                >
                   <BookOpen className="w-4 h-4" />
                   <span>{t('navLessons')}</span>
-                </span>
-                <ChevronDown className={`w-4 h-4 transition-transform ${mobileLessonsOpen ? 'rotate-180' : ''}`} />
-              </button>
+                </Link>
+                <button
+                  onClick={() => setMobileLessonsOpen((v) => !v)}
+                  aria-label={t('navLessons')}
+                  className="px-3 py-2.5 rounded-xl text-white hover:bg-zinc-800 hover:text-yellow-400"
+                  aria-expanded={mobileLessonsOpen}
+                >
+                  <ChevronDown className={`w-4 h-4 transition-transform ${mobileLessonsOpen ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
 
               <AnimatePresence>
                 {mobileLessonsOpen && (
@@ -339,7 +370,10 @@ export default function Navbar() {
             {session && (
               <Link
                 to="/homework"
-                className="px-4 py-2.5 rounded-xl text-sm font-bold text-white hover:bg-zinc-800 hover:text-yellow-400 flex items-center gap-2"
+                className={`px-4 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 ${isHomeworkActive
+                  ? 'bg-yellow-400/20 text-yellow-400'
+                  : 'text-white hover:bg-zinc-800 hover:text-yellow-400'
+                  }`}
               >
                 <ClipboardList className="w-4 h-4" />
                 <span>{t('navHomework')}</span>
