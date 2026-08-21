@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { FileText, Download, Video, Search, Filter, Sparkles, Loader2 } from 'lucide-react'
-import { YEARS, GOVERNORATES } from '../data/dummyData'
+import { YEARS, GOVERNORATES } from '../data/catalog'
 import { fetchPastExamsFromSupabase } from '../lib/supabase'
 import { useLanguage } from '../lib/i18n.jsx'
 
@@ -12,17 +12,26 @@ export default function PastExamsPage() {
   const [selectedYearNum, setSelectedYearNum] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [examsList, setExamsList] = useState([])
 
   useEffect(() => {
+    let active = true
     async function loadExams() {
       setLoading(true)
-      const data = await fetchPastExamsFromSupabase()
-      setExamsList(data)
-      setLoading(false)
+      setLoadError('')
+      try {
+        const data = await fetchPastExamsFromSupabase()
+        if (active) setExamsList(data)
+      } catch (_) {
+        if (active) setLoadError(lang === 'ar' ? 'تعذر تحميل الامتحانات.' : 'Could not load exams.')
+      } finally {
+        if (active) setLoading(false)
+      }
     }
     loadExams()
-  }, [])
+    return () => { active = false }
+  }, [lang])
 
   const filteredExams = examsList.filter((exam) => {
     const matchGrade = selectedYearId === 'all' || String(exam.yearId) === String(selectedYearId)
@@ -138,6 +147,10 @@ export default function PastExamsPage() {
         <div className="text-center py-20 font-bold text-yellow-600 dark:text-yellow-400 flex flex-col items-center gap-3">
           <Loader2 className="w-8 h-8 animate-spin" />
           <span>{lang === 'ar' ? 'جاري جلب امتحانات الفيزياء...' : 'Loading physics exams...'}</span>
+        </div>
+      ) : loadError ? (
+        <div role="alert" className="p-5 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-center font-bold">
+          {loadError}
         </div>
       ) : filteredExams.length === 0 ? (
         <div className="text-center py-16 bg-white dark:bg-zinc-900 rounded-3xl border border-dashed border-slate-300 dark:border-zinc-800 text-slate-500 dark:text-zinc-400 space-y-3">

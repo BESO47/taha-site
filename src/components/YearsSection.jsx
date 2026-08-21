@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { YEARS } from '../data/dummyData'
+import { YEARS } from '../data/catalog'
 import { ArrowLeft, ArrowRight, GraduationCap } from 'lucide-react'
 import { useLanguage } from '../lib/i18n.jsx'
 

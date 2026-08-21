@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useLanguage } from '../lib/i18n.jsx'
-import { YEARS, GOVERNORATES } from '../data/dummyData'
+import { YEARS, GOVERNORATES } from '../data/catalog'
 import {
   fetchStudentAnalytics, fetchGradesForStudent, fetchAttendanceForStudent,
   fetchHomeworkEntries, fetchSubmissionsForStudent, updateOwnProfile
@@ -213,8 +213,9 @@ export default function StudentProfilePage() {
             <label className="block text-xs font-bold mb-1.5">{t('gradeLabel')}</label>
             <select
               value={form.yearId}
-              onChange={(e) => setForm({ ...form, yearId: e.target.value })}
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+              disabled
+              title={lang === 'ar' ? 'يتم تغيير الصف من لوحة المدرس' : 'Grade is managed by the teacher'}
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-sm text-slate-500 cursor-not-allowed"
             >
               {YEARS.map((y) => (
                 <option key={y.id} value={y.id}>{lang === 'ar' ? y.titleAr : y.title}</option>

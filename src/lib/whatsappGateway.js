@@ -8,24 +8,30 @@
  * the UI just polls the job for progress.
  *
  * Configuration (.env of the Vite app):
- *   VITE_WHATSAPP_GATEWAY_URL  default '/api/whatsapp' (proxied in dev)
- *   VITE_WHATSAPP_API_KEY      must match WA_API_KEY on the gateway
+ *   VITE_WHATSAPP_GATEWAY_URL  default '/api/whatsapp' (same-origin proxy)
+ *
+ * Authentication uses the current Supabase access token. Secrets are never
+ * embedded in VITE_ variables or shipped to the browser.
  * =====================================================================
  */
 
+import { supabase } from './supabase'
+
 const RAW_BASE = (import.meta.env.VITE_WHATSAPP_GATEWAY_URL || '/api/whatsapp').trim()
 export const GATEWAY_BASE = RAW_BASE.replace(/\/+$/, '')
-const API_KEY = (import.meta.env.VITE_WHATSAPP_API_KEY || '').trim()
 
 /** The gateway is always *reachable* in dev through the Vite proxy. */
 export function isGatewayConfigured() {
   return Boolean(GATEWAY_BASE)
 }
 
-function headers() {
-  const h = { 'Content-Type': 'application/json' }
-  if (API_KEY) h['x-api-key'] = API_KEY
-  return h
+async function headers() {
+  const requestHeaders = { 'Content-Type': 'application/json' }
+  const { data } = await supabase.auth.getSession()
+  if (data.session?.access_token) {
+    requestHeaders.Authorization = `Bearer ${data.session.access_token}`
+  }
+  return requestHeaders
 }
 
 async function request(path, { method = 'GET', body, timeoutMs = 20000 } = {}) {
@@ -35,7 +41,7 @@ async function request(path, { method = 'GET', body, timeoutMs = 20000 } = {}) {
   try {
     const res = await fetch(`${GATEWAY_BASE}${path}`, {
       method,
-      headers: headers(),
+      headers: await headers(),
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     })
@@ -96,11 +102,6 @@ export function stopSession({ logout = false } = {}) {
   return request('/session/stop', { method: 'POST', body: { logout }, timeoutMs: 30000 })
 }
 
-/** Is this number registered on WhatsApp? */
-export function checkNumber(phone) {
-  return request('/check', { method: 'POST', body: { phone } })
-}
-
 /* ------------------------------------------------------------------ */
 /* Sending                                                             */
 /* ------------------------------------------------------------------ */
@@ -133,11 +134,6 @@ export async function startBulkJob(messages, options = {}) {
 export async function fetchJob(jobId) {
   const { job } = await request(`/jobs/${jobId}`)
   return job
-}
-
-export async function listJobs() {
-  const { jobs } = await request('/jobs')
-  return jobs
 }
 
 export async function pauseJob(jobId) {

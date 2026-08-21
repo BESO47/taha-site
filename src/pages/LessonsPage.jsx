@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import { useLanguage } from '../lib/i18n.jsx'
 import { useAuth } from '../lib/auth.jsx'
-import { YEARS } from '../data/dummyData'
+import { YEARS } from '../data/catalog'
 import { fetchLessonsFromSupabase } from '../lib/supabase'
 import { fetchVideos } from '../lib/api'
 import ProtectedVideoPlayer from '../components/ProtectedVideoPlayer.jsx'

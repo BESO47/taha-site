@@ -5,7 +5,7 @@ import {
   Send, AlertCircle, Target, RefreshCw, CheckCircle2, XCircle, PlayCircle,
 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
-import { YEARS } from '../../data/dummyData'
+import { YEARS } from '../../data/catalog'
 import { fetchLessonsFromSupabase, updateLessonInSupabase } from '../../lib/supabase'
 import {
   fetchStudents, fetchHomeworkSubmissionsForLesson, fetchGroups,

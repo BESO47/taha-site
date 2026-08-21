@@ -173,9 +173,9 @@ export default function LoginPage() {
                 />
                 <span>{t('rememberMe')}</span>
               </label>
-              <a href="#" className="text-yellow-600 dark:text-yellow-400 hover:underline font-bold text-xs">
+              <Link to="/reset-password" className="text-yellow-600 dark:text-yellow-400 hover:underline font-bold text-xs">
                 {t('forgotPassword')}
-              </a>
+              </Link>
             </div>
 
             {/* Submit button */}

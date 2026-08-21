@@ -322,11 +322,6 @@ export function gradeSubmissionAgainstKey({
 }
 
 /** Short label helper: "7 / 10 (70%)". */
-export function formatGrade(result) {
-  if (!result) return '—'
-  return `${result.earnedPoints} / ${result.totalPoints} (${result.percentage}%)`
-}
-
 /**
  * Roll a list of graded submissions up into class-level statistics.
  * Averages are computed from CORRECTNESS percentages, never from the

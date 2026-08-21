@@ -46,30 +46,3 @@ export function isYouTubeUrl(url) {
     extractYouTubeId(url) !== null
   )
 }
-
-export function formatVideoSourceUrl(videoUrl) {
-  if (!videoUrl) return ''
-  const driveId = extractGoogleDriveFileId(videoUrl)
-  if (driveId) {
-    return `https://drive.google.com/file/d/${driveId}/preview`
-  }
-  return videoUrl
-}
-
-export function getEmbedVideoUrl(url) {
-  if (!url) return ''
-
-  // Google Drive
-  const driveId = extractGoogleDriveFileId(url)
-  if (driveId) {
-    return `https://drive.google.com/file/d/${driveId}/preview`
-  }
-
-  // YouTube
-  const ytId = extractYouTubeId(url)
-  if (ytId) {
-    return `https://www.youtube.com/embed/${ytId}?autoplay=0&rel=0&modestbranding=1&controls=1&showinfo=0`
-  }
-
-  return url
-}

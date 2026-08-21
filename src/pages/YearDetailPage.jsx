@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { BookOpen, FileText, Play, Download, Search, Sparkles, Loader2 } from 'lucide-react'
-import { YEARS } from '../data/dummyData'
+import { YEARS } from '../data/catalog'
 import { fetchLessonsFromSupabase, fetchPastExamsFromSupabase } from '../lib/supabase'
 import { useLanguage } from '../lib/i18n.jsx'
 
@@ -14,23 +14,34 @@ export default function YearDetailPage() {
   const [activeTab, setActiveTab] = useState('lessons')
   const [searchQuery, setSearchQuery] = useState('')
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
 
   const [lessonsList, setLessonsList] = useState([])
   const [examsList, setExamsList] = useState([])
 
   useEffect(() => {
+    let active = true
     async function loadData() {
       setLoading(true)
-      const [lessons, exams] = await Promise.all([
-        fetchLessonsFromSupabase(),
-        fetchPastExamsFromSupabase(),
-      ])
-      setLessonsList(lessons)
-      setExamsList(exams)
-      setLoading(false)
+      setLoadError('')
+      try {
+        const [lessons, exams] = await Promise.all([
+          fetchLessonsFromSupabase(),
+          fetchPastExamsFromSupabase(),
+        ])
+        if (active) {
+          setLessonsList(lessons)
+          setExamsList(exams)
+        }
+      } catch (_) {
+        if (active) setLoadError(lang === 'ar' ? 'تعذر تحميل محتوى الصف.' : 'Could not load grade content.')
+      } finally {
+        if (active) setLoading(false)
+      }
     }
     loadData()
-  }, [yearId])
+    return () => { active = false }
+  }, [yearId, lang])
 
   const yearTitle = lang === 'ar' ? yearData.titleAr : yearData.title
   const yearBadge = lang === 'ar' ? yearData.badgeAr : yearData.badge
@@ -133,6 +144,10 @@ export default function YearDetailPage() {
         <div className="text-center py-20 font-bold text-yellow-600 dark:text-yellow-400 flex flex-col items-center gap-3">
           <Loader2 className="w-8 h-8 animate-spin" />
           <span>{lang === 'ar' ? 'جاري تحميل دروس الفيزياء...' : 'Loading physics lessons...'}</span>
+        </div>
+      ) : loadError ? (
+        <div role="alert" className="p-5 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-center font-bold">
+          {loadError}
         </div>
       ) : activeTab === 'lessons' ? (
         <div className="space-y-6">

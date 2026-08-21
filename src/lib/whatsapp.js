@@ -4,7 +4,7 @@
  * Features:
  *   - Universal phone normalization & strict validation (Egypt +20 / International).
  *   - Safe rate limiting / async dispatch queue (2-5s per message) to prevent bans.
- *   - Multi-format webhook payload support (UltraMsg, Green API, Baileys, custom HTTP relays).
+ *   - Authenticated server gateway or manual wa.me delivery (no browser secrets).
  *   - Comprehensive database logging to `whatsapp_logs` table with delivery status.
  *   - Rich report generation for student progress.
  */
@@ -300,12 +300,6 @@ async function delayWithController(ms, controller) {
   return true
 }
 
-const WEBHOOK_URL = import.meta.env.VITE_WHATSAPP_WEBHOOK_URL
-
-export function isWebhookConfigured() {
-  return Boolean(WEBHOOK_URL && String(WEBHOOK_URL).trim().length > 5)
-}
-
 /** Helper sleep function for rate limiting / delay */
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -325,30 +319,31 @@ export async function logWhatsAppDispatch({
 }) {
   const normalizedPhone = normalizePhone(phone)
 
-  // Local storage backup for offline/mock mode
-  try {
-    const key = 'physics_hub_whatsapp_logs'
-    const existing = JSON.parse(localStorage.getItem(key) || '[]')
-    const newEntry = {
-      id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-      student_id: studentId,
-      phone: normalizedPhone,
-      recipient_name: recipientName,
-      recipient_type: recipientType,
-      message_body: messageBody,
-      status,
-      error_message: errorMessage,
-      sent_at: new Date().toISOString(),
-    }
-    localStorage.setItem(key, JSON.stringify([newEntry, ...existing].slice(0, 200)))
-  } catch (err) {
-    // ignore local storage errors
+  // Keep personal message history out of browser storage in configured
+  // deployments. Local history exists only for explicit offline/demo mode.
+  if (!isSupabaseConfigured()) {
+    try {
+      const key = 'physics_hub_whatsapp_logs'
+      const existing = JSON.parse(localStorage.getItem(key) || '[]')
+      const newEntry = {
+        id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        student_id: studentId,
+        phone: normalizedPhone,
+        recipient_name: recipientName,
+        recipient_type: recipientType,
+        message_body: messageBody,
+        status,
+        error_message: errorMessage,
+        sent_at: new Date().toISOString(),
+      }
+      localStorage.setItem(key, JSON.stringify([newEntry, ...existing].slice(0, 200)))
+    } catch (_) {}
   }
 
   // Persist to Supabase if configured
   if (isSupabaseConfigured()) {
     try {
-      await supabase.from('whatsapp_logs').insert([
+      const { error } = await supabase.from('whatsapp_logs').insert([
         {
           student_id: studentId || null,
           phone: normalizedPhone,
@@ -360,6 +355,7 @@ export async function logWhatsAppDispatch({
           sent_at: new Date().toISOString(),
         },
       ])
+      if (error) throw error
     } catch (err) {
       console.warn('Failed to insert into whatsapp_logs table:', err)
     }
@@ -371,19 +367,14 @@ export async function logWhatsAppDispatch({
  */
 export async function fetchWhatsAppLogs({ limit = 50 } = {}) {
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('whatsapp_logs')
-        .select('*')
-        .order('sent_at', { ascending: false })
-        .limit(limit)
-
-      if (!error && Array.isArray(data)) {
-        return data
-      }
-    } catch (err) {
-      console.warn('Failed to fetch whatsapp_logs from Supabase:', err)
-    }
+    const safeLimit = Math.min(200, Math.max(1, Number(limit) || 50))
+    const { data, error } = await supabase
+      .from('whatsapp_logs')
+      .select('*')
+      .order('sent_at', { ascending: false })
+      .limit(safeLimit)
+    if (error) throw error
+    return data || []
   }
 
   // Fallback to local storage
@@ -393,288 +384,6 @@ export async function fetchWhatsAppLogs({ limit = 50 } = {}) {
   } catch (err) {}
 
   return []
-}
-
-/**
- * POST message to external webhook / Cloud API / UltraMsg / Baileys / Green API.
- * Includes multi-provider payload mapping and 15s timeout.
- */
-export async function sendViaWebhook(phone, message, meta = {}) {
-  if (!isWebhookConfigured()) {
-    throw new Error('VITE_WHATSAPP_WEBHOOK_URL is not configured in .env')
-  }
-
-  const validation = validatePhone(phone)
-  if (!validation.isValid) {
-    throw new Error(validation.error || 'Invalid phone number')
-  }
-
-  const normalized = validation.normalized
-  const formattedWithPlus = validation.formatted
-
-  // Multi-provider compatible payload
-  const payload = {
-    to: normalized,
-    phone: normalized,
-    formattedPhone: formattedWithPlus,
-    chatId: `${normalized}@c.us`,
-    message,
-    body: message,
-    studentId: meta.studentId || null,
-    studentName: meta.studentName || '',
-    groupName: meta.groupName || '',
-    target: meta.target || 'student',
-    recipientType: meta.target || 'student',
-    timestamp: new Date().toISOString(),
-  }
-
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 15000)
-
-  try {
-    const res = await fetch(WEBHOOK_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    })
-
-    clearTimeout(timeoutId)
-
-    if (!res.ok) {
-      let errorText = `Webhook responded with status ${res.status}`
-      try {
-        const errorJson = await res.json()
-        if (errorJson.message || errorJson.error || errorJson.reason) {
-          errorText = errorJson.message || errorJson.error || errorJson.reason
-        }
-      } catch (_) {}
-      throw new Error(errorText)
-    }
-
-    const data = await res.json().catch(() => ({ ok: true, status: 'sent' }))
-    return { ok: true, data }
-  } catch (err) {
-    clearTimeout(timeoutId)
-    if (err.name === 'AbortError') {
-      throw new Error('Webhook request timed out after 15 seconds')
-    }
-    throw err
-  }
-}
-
-/**
- * Sequential Bulk WhatsApp Dispatch Engine with Rate Limiting & Delays (2-5s per message)
- * Logs every dispatch result to the database and returns structured summary.
- *
- * Recipients are processed ONE BY ONE (Index + 1) — the next message is only
- * dispatched after the current one completes AND the configured delay elapses,
- * so the chat context fully loads before proceeding. The queue can be paused,
- * resumed and cancelled at any point via a controller.
- *
- * @param {Array<{ phone: string, message: string, record?: object, studentName?: string, studentId?: string, target?: string }>} messages
- * @param {Object} options
- * @param {number} options.delayMs - delay between messages (default 3000ms)
- * @param {Function} options.onProgress - progress callback: ({ current, total, percent, studentName, phone, currentStatus, successfulCount, failedCount, delayRemaining }) => void
- * @param {AbortSignal} options.signal - optional abort signal to cancel in-flight webhook fetch
- * @param {Object} options.controller - queue controller from createQueueController() for pause/resume/cancel
- * @returns {Promise<{ total: number, sent: number, failed: number, successfulCount: number, failedCount: number, errors: Array, logs: Array }>}
- */
-export async function dispatchBulkWhatsAppQueue(
-  messages = [],
-  {
-    delayMs = 3000,
-    onProgress = null,
-    signal = null,
-    controller = null,
-  } = {}
-) {
-  const total = messages.length
-  let successfulCount = 0
-  let failedCount = 0
-  const errors = []
-  const logs = []
-
-  // ---------------------------------------------------------------------
-  // BUG FIX: the previous version counted every recipient as "sent" when no
-  // transport was configured — the teacher saw a green summary while nobody
-  // received anything. Refuse to run without a real transport instead.
-  // ---------------------------------------------------------------------
-  if (!isWebhookConfigured()) {
-    throw new Error(
-      'No WhatsApp webhook is configured (VITE_WHATSAPP_WEBHOOK_URL). ' +
-      'Use the WhatsApp gateway (recommended, see WHATSAPP_BULK_SETUP.md) or the manual WhatsApp Web mode.'
-    )
-  }
-
-  for (let i = 0; i < total; i++) {
-    if (signal?.aborted || controller?.cancelled) {
-      console.log('Bulk dispatch aborted by user.')
-      break
-    }
-
-    // Respect pause before starting the next recipient
-    await holdWhilePaused(controller)
-    if (signal?.aborted || controller?.cancelled) break
-
-    const item = messages[i]
-    const studentName = item.record?.full_name || item.studentName || 'Student'
-    const studentId = item.record?.student_id || item.studentId || null
-    const recipientType = item.target || 'student'
-    const rawPhone = item.phone
-
-    // Notify progress: start of item
-    onProgress?.({
-      current: i + 1,
-      total,
-      percent: Math.round(((i + 1) / total) * 100),
-      studentName,
-      phone: rawPhone,
-      currentStatus: 'sending',
-      successfulCount,
-      failedCount,
-    })
-
-    const validation = validatePhone(rawPhone)
-
-    if (!validation.isValid) {
-      failedCount++
-      const errorMsg = validation.error || 'Invalid phone number format'
-      errors.push({
-        index: i + 1,
-        studentName,
-        phone: rawPhone,
-        error: errorMsg,
-      })
-
-      await logWhatsAppDispatch({
-        studentId,
-        phone: rawPhone || 'unknown',
-        recipientName: studentName,
-        recipientType,
-        messageBody: item.message,
-        status: 'failed',
-        errorMessage: errorMsg,
-      })
-
-      logs.push({
-        studentName,
-        phone: rawPhone,
-        status: 'failed',
-        error: errorMsg,
-      })
-
-      // Skip delay for validation failure and continue
-      continue
-    }
-
-    try {
-      // The dispatch only counts as successful when the provider confirms it.
-      await sendViaWebhook(validation.normalized, item.message, {
-        studentId,
-        studentName,
-        target: recipientType,
-      })
-
-      successfulCount++
-
-      await logWhatsAppDispatch({
-        studentId,
-        phone: validation.normalized,
-        recipientName: studentName,
-        recipientType,
-        messageBody: item.message,
-        status: 'sent',
-        errorMessage: null,
-      })
-
-      logs.push({
-        studentName,
-        phone: validation.normalized,
-        status: 'sent',
-        error: null,
-      })
-
-      onProgress?.({
-        current: i + 1,
-        total,
-        percent: Math.round(((i + 1) / total) * 100),
-        studentName,
-        phone: validation.normalized,
-        currentStatus: 'sent',
-        successfulCount,
-        failedCount,
-      })
-    } catch (err) {
-      failedCount++
-      const errMsg = err.message || 'Webhook transmission failed'
-      errors.push({
-        index: i + 1,
-        studentName,
-        phone: validation.normalized,
-        error: errMsg,
-      })
-
-      await logWhatsAppDispatch({
-        studentId,
-        phone: validation.normalized,
-        recipientName: studentName,
-        recipientType,
-        messageBody: item.message,
-        status: 'failed',
-        errorMessage: errMsg,
-      })
-
-      logs.push({
-        studentName,
-        phone: validation.normalized,
-        status: 'failed',
-        error: errMsg,
-      })
-
-      onProgress?.({
-        current: i + 1,
-        total,
-        percent: Math.round(((i + 1) / total) * 100),
-        studentName,
-        phone: validation.normalized,
-        currentStatus: 'failed',
-        successfulCount,
-        failedCount,
-        error: errMsg,
-      })
-    }
-
-    // Apply rate-limiting delay between outgoing messages if there are remaining messages
-    if (i < total - 1 && delayMs > 0 && !signal?.aborted && !controller?.cancelled) {
-      onProgress?.({
-        current: i + 1,
-        total,
-        percent: Math.round(((i + 1) / total) * 100),
-        studentName,
-        phone: validation.normalized,
-        currentStatus: 'waiting_delay',
-        successfulCount,
-        failedCount,
-        delayRemaining: delayMs,
-      })
-      const completed = await delayWithController(delayMs, controller)
-      if (!completed) break
-    }
-  }
-
-  return {
-    total,
-    sent: successfulCount,
-    failed: failedCount,
-    successfulCount,
-    failedCount,
-    errors,
-    logs,
-  }
 }
 
 /**
@@ -751,13 +460,15 @@ export async function dispatchWhatsAppLinksSequentially(
       // Browsers only allow ONE popup per user gesture: every window.open
       // after the first is silently blocked and returns null. Detect it
       // instead of reporting a fake success.
-      const opened = window.open(url, '_blank', 'noopener,noreferrer')
+      const opened = window.open(url, '_blank')
       if (!opened) {
         throw new Error(
           'Popup blocked by the browser. Allow popups for this site, or use the ' +
           'WhatsApp gateway for fully automatic sending.'
         )
       }
+      // Detach the opener before the remote page loads (reverse-tabnabbing).
+      try { opened.opener = null } catch (_) {}
       successfulCount++
 
       await logWhatsAppDispatch({
@@ -766,11 +477,11 @@ export async function dispatchWhatsAppLinksSequentially(
         recipientName: studentName,
         recipientType,
         messageBody: item.message,
-        status: 'sent',
+        status: 'pending', // browser opened the chat; delivery is not confirmable
         errorMessage: null,
       })
 
-      logs.push({ studentName, phone: validation.normalized, status: 'sent', error: null })
+      logs.push({ studentName, phone: validation.normalized, status: 'opened', error: null })
 
       onProgress?.({
         current: i + 1,
@@ -827,38 +538,10 @@ export async function dispatchWhatsAppLinksSequentially(
   }
 }
 
-/** Uses the webhook when configured, otherwise falls back to the deep link. */
+/** Open a manual wa.me report when the authenticated gateway is unavailable. */
 export async function sendReport(phone, message, meta = {}) {
   const validation = validatePhone(phone)
-  if (!validation.isValid) {
-    throw new Error(validation.error || 'Invalid phone number')
-  }
-
-  if (isWebhookConfigured()) {
-    try {
-      await sendViaWebhook(validation.normalized, message, meta)
-      await logWhatsAppDispatch({
-        studentId: meta.studentId || null,
-        phone: validation.normalized,
-        recipientName: meta.studentName || '',
-        recipientType: meta.target || 'student',
-        messageBody: message,
-        status: 'sent',
-      })
-      return { via: 'webhook', success: true }
-    } catch (err) {
-      await logWhatsAppDispatch({
-        studentId: meta.studentId || null,
-        phone: validation.normalized,
-        recipientName: meta.studentName || '',
-        recipientType: meta.target || 'student',
-        messageBody: message,
-        status: 'failed',
-        errorMessage: err.message,
-      })
-      throw err
-    }
-  }
+  if (!validation.isValid) throw new Error(validation.error || 'Invalid phone number')
 
   openWhatsApp(validation.normalized, message)
   await logWhatsAppDispatch({
@@ -867,7 +550,7 @@ export async function sendReport(phone, message, meta = {}) {
     recipientName: meta.studentName || '',
     recipientType: meta.target || 'student',
     messageBody: message,
-    status: 'sent',
+    status: 'pending', // opening wa.me does not prove provider delivery
   })
   return { via: 'wa.me', success: true }
 }
@@ -884,7 +567,7 @@ export async function sendReport(phone, message, meta = {}) {
 
 /**
  * Which transport will actually be used right now?
- * @returns {Promise<{ mode:'gateway'|'webhook'|'manual', ready:boolean, status:object|null, reason:string }>}
+ * @returns {Promise<{ mode:'gateway'|'manual', ready:boolean, status:object|null, reason:string }>}
  */
 export async function resolveTransport() {
   if (isGatewayConfigured()) {
@@ -906,10 +589,6 @@ export async function resolveTransport() {
         return { mode: 'gateway', ready: false, status: null, reason: err.message }
       }
     }
-  }
-
-  if (isWebhookConfigured()) {
-    return { mode: 'webhook', ready: true, status: null, reason: 'Using VITE_WHATSAPP_WEBHOOK_URL' }
   }
 
   return {
@@ -1014,7 +693,7 @@ export const gatewayControls = {
 
 /**
  * Send a single message through the best available transport.
- * Order: gateway -> webhook -> wa.me deep link.
+ * Order: authenticated gateway -> wa.me deep link.
  */
 export async function sendMessageSmart(phone, message, meta = {}) {
   const validation = validatePhone(phone)

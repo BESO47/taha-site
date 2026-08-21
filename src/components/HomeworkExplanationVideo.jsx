@@ -27,7 +27,7 @@ export default function HomeworkExplanationVideo({
   const { t, lang } = useLanguage()
   const [open, setOpen] = useState(false)
 
-  if (!videoUrl) return null
+  if (!videoUrl && unlocked) return null
 
   const label = title || t('explanationVideoTitle')
 

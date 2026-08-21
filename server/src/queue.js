@@ -19,8 +19,13 @@ import { getProvider } from './providers/index.js'
 /** jobId -> job */
 const jobs = new Map()
 const MAX_JOBS_KEPT = 50
+let dispatchChain = Promise.resolve()
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const maskPhone = (phone) => {
+  const value = String(phone || '')
+  return value.length > 4 ? `${'*'.repeat(value.length - 4)}${value.slice(-4)}` : '****'
+}
 
 function publicJob(job) {
   const { _control, ...rest } = job
@@ -50,6 +55,17 @@ export function createJob(messages, options = {}) {
   if (messages.length > config.maxRecipientsPerJob) {
     throw new Error(`Too many recipients (${messages.length}). Limit is ${config.maxRecipientsPerJob}.`)
   }
+  const unfinishedJobs = [...jobs.values()].filter(
+    (job) => !['completed', 'cancelled', 'failed'].includes(job.status)
+  ).length
+  if (unfinishedJobs >= config.maxQueuedJobs) {
+    throw new Error(`The dispatch queue is full. Wait for a job to finish (limit: ${config.maxQueuedJobs}).`)
+  }
+
+  const finite = (value, fallback, max) => {
+    const number = Number(value)
+    return Number.isFinite(number) ? Math.min(max, Math.max(0, number)) : fallback
+  }
 
   const job = {
     id: randomUUID(),
@@ -63,11 +79,11 @@ export function createJob(messages, options = {}) {
     skipped: 0,
     percent: 0,
     current: null,               // { index, name, phone, status }
-    delayMs: Math.max(0, Number(options.delayMs ?? config.defaultDelayMs)),
-    jitterMs: Math.max(0, Number(options.jitterMs ?? config.defaultJitterMs)),
-    batchSize: Math.max(0, Number(options.batchSize ?? config.batchSize)),
-    batchPauseMs: Math.max(0, Number(options.batchPauseMs ?? config.batchPauseMs)),
-    maxRetries: Math.max(0, Number(options.maxRetries ?? config.maxRetries)),
+    delayMs: finite(options.delayMs, config.defaultDelayMs, 600_000),
+    jitterMs: finite(options.jitterMs, config.defaultJitterMs, 600_000),
+    batchSize: Math.max(1, finite(options.batchSize, config.batchSize, 1_000)),
+    batchPauseMs: finite(options.batchPauseMs, config.batchPauseMs, 3_600_000),
+    maxRetries: finite(options.maxRetries, config.maxRetries, 10),
     createdAt: new Date().toISOString(),
     startedAt: null,
     finishedAt: null,
@@ -91,13 +107,17 @@ export function createJob(messages, options = {}) {
   jobs.set(job.id, job)
   pruneJobs()
 
-  // Fire and forget — the loop keeps running after the HTTP response.
-  runJob(job, messages).catch((err) => {
-    job.status = 'failed'
-    job.error = err.message
-    job.finishedAt = new Date().toISOString()
-    log.error(`Job ${job.id} crashed:`, err)
-  })
+  // Serialize jobs globally: multiple API requests must never create multiple
+  // concurrent WhatsApp sends. The HTTP request still returns immediately.
+  dispatchChain = dispatchChain
+    .catch(() => {})
+    .then(() => runJob(job, messages))
+    .catch((err) => {
+      job.status = 'failed'
+      job.error = err.message
+      job.finishedAt = new Date().toISOString()
+      log.error(`Job ${job.id} crashed:`, err)
+    })
 
   return publicJob(job)
 }
@@ -125,6 +145,11 @@ async function interruptibleDelay(job, ms) {
 }
 
 async function runJob(job, messages) {
+  if (job._control.cancelRequested) {
+    job.status = 'cancelled'
+    job.finishedAt = new Date().toISOString()
+    return
+  }
   const provider = getProvider()
 
   // Make sure the transport is actually usable before burning through the
@@ -198,7 +223,7 @@ async function runJob(job, messages) {
       } catch (err) {
         lastError = err
         const permanent = /not registered|invalid|not allowed|forbidden/i.test(err.message || '')
-        log.warn(`Job ${job.id} · ${check.normalized} attempt ${attempt + 1} failed: ${err.message}`)
+        log.warn(`Job ${job.id} · ${maskPhone(check.normalized)} attempt ${attempt + 1} failed: ${err.message}`)
         if (permanent || attempt === job.maxRetries) break
         const backoff = config.retryBackoffMs * (attempt + 1)
         const ok = await interruptibleDelay(job, backoff)

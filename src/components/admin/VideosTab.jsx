@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Video, Plus, Trash2, Loader2, Eye, EyeOff } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
-import { YEARS } from '../../data/dummyData'
+import { YEARS } from '../../data/catalog'
 import { fetchVideos, createVideo, updateVideo, deleteVideo } from '../../lib/api'
 import { extractYouTubeId } from '../../lib/driveUtils'
 

@@ -1,14 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import confetti from 'canvas-confetti'
 import {
   ClipboardList, Loader2, Sparkles, Award, AlertCircle, Filter,
   CheckCircle2, Clock3, Send, Unlock, BookOpen, RefreshCw,
 } from 'lucide-react'
 import { useLanguage } from '../lib/i18n.jsx'
 import { useAuth } from '../lib/auth.jsx'
-import { YEARS } from '../data/dummyData'
+import { YEARS } from '../data/catalog'
 import { fetchStudentHomeworkFeed } from '../lib/api'
 import HomeworkSubmitCard from '../components/HomeworkSubmitCard.jsx'
 import HomeworkExplanationVideo from '../components/HomeworkExplanationVideo.jsx'
@@ -85,9 +84,9 @@ export default function HomeworkPage() {
     const before = item.videoUnlocked
     await loadFeed()
     if (!before && item.hasVideo) {
-      try {
-        confetti({ particleCount: 110, spread: 75, origin: { y: 0.6 } })
-      } catch (_) {}
+      import('canvas-confetti')
+        .then(({ default: confetti }) => confetti({ particleCount: 110, spread: 75, origin: { y: 0.6 } }))
+        .catch(() => {})
     }
   }, [loadFeed])
 

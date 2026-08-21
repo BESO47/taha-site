@@ -1,10 +1,21 @@
 import { supabase, isSupabaseConfigured } from './supabase'
-import { DEFAULT_GROUPS, SAMPLE_STUDENTS, LESSONS } from '../data/dummyData'
+import { DEFAULT_GROUPS } from '../data/catalog'
 import { gradeSubmissionAgainstKey, summarizeGrades } from './grading'
+
+function optionalHttpsUrl(value, fieldName) {
+  if (!value) return null
+  let parsed
+  try { parsed = new URL(String(value)) } catch (_) { throw new Error(`${fieldName} must be a valid URL`) }
+  if (parsed.protocol !== 'https:' && !(import.meta.env.DEV && parsed.protocol === 'http:')) {
+    throw new Error(`${fieldName} must use HTTPS`)
+  }
+  return parsed.href
+}
 
 /**
  * Data access layer for Physics Hub platform.
- * Supports Supabase database operations with robust local caching fallbacks.
+ * Configured deployments fail visibly on backend errors; local demo data is
+ * used only when Supabase is intentionally not configured.
  */
 
 // =====================================================================
@@ -12,47 +23,34 @@ import { gradeSubmissionAgainstKey, summarizeGrades } from './grading'
 // =====================================================================
 export async function fetchGroups() {
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('groups')
-        .select('*')
-        .order('name', { ascending: true })
-
-      if (!error && data && data.length > 0) {
-        return data
-      }
-    } catch (err) {
-      console.warn('Failed to fetch groups from Supabase, using default:', err)
-    }
+    const { data, error } = await supabase
+      .from('groups')
+      .select('*')
+      .order('name', { ascending: true })
+    if (error) throw error
+    return data || []
   }
 
-  // Fallback to local storage or defaults
   try {
     const raw = localStorage.getItem('physics_hub_groups')
     if (raw) return JSON.parse(raw)
   } catch (_) {}
-
   return DEFAULT_GROUPS
 }
 
 export async function createGroup({ name, yearId = '5', description = '' }) {
-  const cleanName = String(name || '').trim()
-  if (!cleanName) throw new Error('Group name cannot be empty')
+  const cleanName = String(name || '').trim().replace(/\s+/g, ' ')
+  if (!cleanName || cleanName.length > 80) throw new Error('Group name must be between 1 and 80 characters')
 
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('groups')
-        .insert([{ name: cleanName, year_id: String(yearId), description: description || null }])
-        .select()
-      if (error) throw error
-      return data?.[0]
-    } catch (err) {
-      console.warn('Supabase group insert error:', err)
-    }
+    const { data, error } = await supabase
+      .from('groups')
+      .insert([{ name: cleanName, year_id: String(yearId), description: String(description || '').trim() || null }])
+      .select()
+    if (error) throw error
+    return data?.[0]
   }
 
-  // Local storage fallback
   const current = await fetchGroups()
   const newGroup = {
     id: `group_${Date.now()}`,
@@ -61,54 +59,43 @@ export async function createGroup({ name, yearId = '5', description = '' }) {
     description,
     created_at: new Date().toISOString(),
   }
-  const updated = [...current, newGroup]
-  try {
-    localStorage.setItem('physics_hub_groups', JSON.stringify(updated))
-  } catch (_) {}
+  try { localStorage.setItem('physics_hub_groups', JSON.stringify([...current, newGroup])) } catch (_) {}
   return newGroup
 }
 
 export async function deleteGroup(id) {
   if (isSupabaseConfigured()) {
-    try {
-      const { error } = await supabase.from('groups').delete().eq('id', id)
-      if (error) throw error
-    } catch (err) {
-      console.warn('Supabase group delete error:', err)
-    }
+    // Keep the denormalized compatibility name synchronized with the FK.
+    const clear = await supabase
+      .from('profiles')
+      .update({ group_id: null, group_name: null })
+      .eq('group_id', id)
+    if (clear.error) throw clear.error
+    const { error } = await supabase.from('groups').delete().eq('id', id)
+    if (error) throw error
+    return
   }
 
   const current = await fetchGroups()
-  const filtered = current.filter((g) => g.id !== id)
-  try {
-    localStorage.setItem('physics_hub_groups', JSON.stringify(filtered))
-  } catch (_) {}
+  try { localStorage.setItem('physics_hub_groups', JSON.stringify(current.filter((group) => group.id !== id))) } catch (_) {}
 }
 
-export async function updateStudentGroup(studentId, groupName) {
-  const cleanGroup = String(groupName || '').trim()
+export async function updateStudentGroup(studentId, group = null) {
+  const groupId = group?.id || null
+  const groupName = String(group?.name || '').trim() || null
 
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .update({ group_name: cleanGroup || null })
-        .eq('id', studentId)
-        .select()
-      if (error) throw error
-      return data?.[0]
-    } catch (err) {
-      console.warn('Supabase updateStudentGroup error:', err)
-    }
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ group_id: groupId, group_name: groupName })
+      .eq('id', studentId)
+      .select()
+    if (error) throw error
+    return data?.[0]
   }
 
-  // Local storage update for fallback
-  try {
-    const key = `student_group_${studentId}`
-    localStorage.setItem(key, cleanGroup)
-  } catch (_) {}
-
-  return { id: studentId, group_name: cleanGroup }
+  try { localStorage.setItem(`student_group_${studentId}`, groupName || '') } catch (_) {}
+  return { id: studentId, group_id: groupId, group_name: groupName }
 }
 
 // =====================================================================
@@ -118,35 +105,6 @@ export async function updateStudentGroup(studentId, groupName) {
 // STUDENT'S ANSWERS WITH THE TEACHER'S ANSWER KEY (see lib/grading.js).
 // Handing work in is never a grade by itself: an empty or fully wrong
 // paper scores 0%, and the score is weighted by each question's points.
-
-/**
- * Extra analytics columns created by `homework-grading.sql`.
- * Older databases may not have them yet, so every write degrades
- * gracefully to the base columns instead of throwing.
- */
-const HOMEWORK_GRADE_COLUMNS = [
-  'correct_count', 'incorrect_count', 'unanswered_count',
-  'percentage', 'total_points', 'breakdown', 'auto_graded',
-]
-
-/** True when PostgREST/Postgres rejected the write because a column is missing. */
-function isMissingColumnError(error) {
-  if (!error) return false
-  const code = String(error.code || '')
-  const msg = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`.toLowerCase()
-  return (
-    code === 'PGRST204' || code === '42703' ||
-    msg.includes('could not find') && msg.includes('column') ||
-    msg.includes('does not exist') && msg.includes('column')
-  )
-}
-
-/** Remove the optional analytics columns from a payload. */
-function stripGradeColumns(payload) {
-  const clone = { ...payload }
-  HOMEWORK_GRADE_COLUMNS.forEach((c) => delete clone[c])
-  return clone
-}
 
 /**
  * Re-shape a `homework_submissions` row (or a localStorage record) into the
@@ -183,45 +141,6 @@ export function normalizeHomeworkSubmissionRow(row = {}, extra = {}) {
     isUnlocked: true,
     ...extra,
   }
-}
-
-/**
- * Fetch a student's homework submission for a specific lesson.
- */
-export async function fetchHomeworkSubmission({ lessonId, studentId }) {
-  if (!lessonId || !studentId) return null
-
-  if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('homework_submissions')
-        .select('*')
-        .eq('lesson_id', lessonId)
-        .eq('student_id', studentId)
-        .maybeSingle()
-
-      if (!error && data) return normalizeHomeworkSubmissionRow(data)
-    } catch (err) {
-      console.warn('Failed to fetch homework submission from Supabase:', err)
-    }
-  }
-
-  // Fallback to local storage
-  try {
-    const key = `hw_sub_${lessonId}_${studentId}`
-    const raw = localStorage.getItem(key)
-    if (raw) return normalizeHomeworkSubmissionRow(JSON.parse(raw))
-  } catch (_) {}
-
-  return null
-}
-
-/**
- * Mark a set of answers against the answer key WITHOUT persisting anything.
- * Exposed so the UI (and the admin re-grade tool) can preview a result.
- */
-export function gradeHomeworkAnswers({ questions = [], modelAnswers = null, answers = {} } = {}) {
-  return gradeSubmissionAgainstKey({ questions, modelAnswers, answers })
 }
 
 /**
@@ -269,73 +188,35 @@ export async function submitHomeworkSubmission({
     submitted_at: new Date().toISOString(),
   }
 
-  let savedSubmission = null
   let serverResult = null
 
-  // ---- 2. PERSIST (with graceful degradation for older schemas) -------
+  // Configured deployments must use the authoritative RPC. Falling back to
+  // a browser-computed score would let a student forge grading fields.
   if (isSupabaseConfigured()) {
-    // 2a. Preferred path: mark on the server so the answer key stays
-    //     server-side and a student can never post their own score.
-    try {
-      const { data, error } = await supabase.rpc('grade_lesson_homework', {
-        p_lesson_id: lessonId,
-        p_answers: answers,
-      })
-      if (!error && data) {
-        const r = Array.isArray(data) ? data[0] : data
-        serverResult = {
-          earnedPoints: Number(r.score) || 0,
-          totalPoints: Number(r.total_points) || 0,
-          totalQuestions: Number(r.total_questions) || questionCount,
-          correctCount: Number(r.correct_count) || 0,
-          incorrectCount: Number(r.incorrect_count) || 0,
-          unansweredCount: Number(r.unanswered_count) || 0,
-          percentage: Math.round(Number(r.percentage)) || 0,
-          breakdown: r.breakdown || result.breakdown,
-          hasAnswerKey: Number(r.total_points) > 0,
-        }
-      } else if (error) {
-        throw error
-      }
-    } catch (err) {
-      console.warn(
-        'grade_lesson_homework RPC unavailable (run homework-grading.sql) — ' +
-        'marking on the client instead:', err.message || err
-      )
+    const { data, error } = await supabase.rpc('grade_lesson_homework', {
+      p_lesson_id: lessonId,
+      p_answers: answers,
+    })
+    if (error) {
+      throw new Error('Server-side lesson grading is unavailable. Apply homework-grading.sql.')
+    }
+    const row = Array.isArray(data) ? data[0] : data
+    serverResult = {
+      earnedPoints: Number(row?.score) || 0,
+      totalPoints: Number(row?.total_points) || 0,
+      totalQuestions: Number(row?.total_questions) || questionCount,
+      correctCount: Number(row?.correct_count) || 0,
+      incorrectCount: Number(row?.incorrect_count) || 0,
+      unansweredCount: Number(row?.unanswered_count) || 0,
+      percentage: Math.round(Number(row?.percentage)) || 0,
+      breakdown: row?.breakdown || [],
+      hasAnswerKey: Number(row?.total_points) > 0,
     }
   }
 
-  if (isSupabaseConfigured() && !serverResult) {
-    try {
-      let { data, error } = await supabase
-        .from('homework_submissions')
-        .upsert(payload, { onConflict: 'lesson_id,student_id' })
-        .select()
-
-      if (error && isMissingColumnError(error)) {
-        console.warn(
-          'homework_submissions is missing the grading columns — run homework-grading.sql. ' +
-          'Falling back to the base columns.'
-        )
-        const legacy = await supabase
-          .from('homework_submissions')
-          .upsert(stripGradeColumns(payload), { onConflict: 'lesson_id,student_id' })
-          .select()
-        data = legacy.data
-        error = legacy.error
-      }
-
-      if (!error && data?.[0]) savedSubmission = data[0]
-      else if (error) console.warn('Supabase homework submission upsert error:', error)
-    } catch (err) {
-      console.warn('Supabase homework submission exception:', err)
-    }
-  }
-
-  // ---- 3. Mirror locally for instant UI + offline resilience ----------
   const final = serverResult || result
   const localResult = {
-    id: savedSubmission?.id || `sub_${Date.now()}`,
+    id: `sub_${Date.now()}`,
     studentId,
     lessonId,
     answers,
@@ -355,16 +236,16 @@ export async function submitHomeworkSubmission({
     isUnlocked: true,
   }
 
-  try {
-    const key = `hw_sub_${lessonId}_${studentId}`
-    localStorage.setItem(key, JSON.stringify(localResult))
-
-    // Also update global list of submissions
-    const allKey = 'physics_hub_all_hw_submissions'
-    const allRaw = JSON.parse(localStorage.getItem(allKey) || '[]')
-    const filtered = allRaw.filter((s) => !(s.lessonId === lessonId && s.studentId === studentId))
-    localStorage.setItem(allKey, JSON.stringify([localResult, ...filtered]))
-  } catch (_) {}
+  if (!isSupabaseConfigured()) {
+    try {
+      const key = `hw_sub_${lessonId}_${studentId}`
+      localStorage.setItem(key, JSON.stringify(localResult))
+      const allKey = 'physics_hub_all_hw_submissions'
+      const allRaw = JSON.parse(localStorage.getItem(allKey) || '[]')
+      const filtered = allRaw.filter((item) => !(item.lessonId === lessonId && item.studentId === studentId))
+      localStorage.setItem(allKey, JSON.stringify([localResult, ...filtered]))
+    } catch (_) {}
+  }
 
   return localResult
 }
@@ -376,11 +257,23 @@ export async function submitHomeworkSubmission({
  * @returns {{ updated:number, failed:number, results:Array, stats:object }}
  */
 export async function regradeLessonSubmissions({ lessonId, questions = [], modelAnswers = {} }) {
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('regrade_lesson_homework', { p_lesson_id: lessonId })
+    if (error) throw error
+    const results = (data || []).map((row) => ({
+      studentId: row.student_id,
+      score: Number(row.score) || 0,
+      earnedPoints: Number(row.score) || 0,
+      correctCount: Number(row.correct_count) || 0,
+      incorrectCount: Number(row.incorrect_count) || 0,
+      percentage: Number(row.percentage) || 0,
+    }))
+    return { updated: results.length, failed: 0, results, stats: summarizeGrades(results) }
+  }
+
   const rows = await fetchHomeworkSubmissionsForLesson(lessonId)
   const results = []
-  let updated = 0
   let failed = 0
-
   for (const row of rows) {
     try {
       const graded = await submitHomeworkSubmission({
@@ -391,14 +284,11 @@ export async function regradeLessonSubmissions({ lessonId, questions = [], model
         questions,
       })
       results.push({ ...graded, studentName: row.studentName })
-      updated++
-    } catch (err) {
-      console.warn('Re-grade failed for student', row.studentId, err)
-      failed++
+    } catch (_) {
+      failed += 1
     }
   }
-
-  return { updated, failed, results, stats: summarizeGrades(results) }
+  return { updated: results.length, failed, results, stats: summarizeGrades(results) }
 }
 
 /**
@@ -408,25 +298,19 @@ export async function fetchHomeworkSubmissionsForLesson(lessonId) {
   if (!lessonId) return []
 
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('homework_submissions')
-        .select('*, profiles:student_id (id, full_name, phone, parent_phone, year_id, group_name)')
-        .eq('lesson_id', lessonId)
-        .order('submitted_at', { ascending: false })
-
-      if (!error && Array.isArray(data)) {
-        return data.map((d) => normalizeHomeworkSubmissionRow(d, {
-          studentName: d.profiles?.full_name || 'طالب',
-          phone: d.profiles?.phone || '',
-          parentPhone: d.profiles?.parent_phone || '',
-          groupName: d.profiles?.group_name || 'عام',
-          yearId: d.profiles?.year_id || '5',
-        }))
-      }
-    } catch (err) {
-      console.warn('Supabase fetchHomeworkSubmissionsForLesson error:', err)
-    }
+    const { data, error } = await supabase
+      .from('homework_submissions')
+      .select('*, profiles:student_id (id, full_name, phone, parent_phone, year_id, group_name)')
+      .eq('lesson_id', lessonId)
+      .order('submitted_at', { ascending: false })
+    if (error) throw error
+    return (data || []).map((row) => normalizeHomeworkSubmissionRow(row, {
+      studentName: row.profiles?.full_name || 'طالب',
+      phone: row.profiles?.phone || '',
+      parentPhone: row.profiles?.parent_phone || '',
+      groupName: row.profiles?.group_name || 'عام',
+      yearId: row.profiles?.year_id || '5',
+    }))
   }
 
   // Fallback to local storage
@@ -449,90 +333,17 @@ export async function fetchHomeworkSubmissionsForLesson(lessonId) {
   return []
 }
 
-/**
- * Fetch all homework submissions across all lessons.
- */
-export async function fetchAllHomeworkSubmissions() {
-  if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('homework_submissions')
-        .select('*, profiles:student_id (id, full_name, phone, parent_phone, year_id, group_name), lessons:lesson_id (id, title, year_id)')
-        .order('submitted_at', { ascending: false })
-
-      if (!error && Array.isArray(data)) {
-        return data.map((d) => normalizeHomeworkSubmissionRow(d, {
-          studentName: d.profiles?.full_name || 'طالب',
-          phone: d.profiles?.phone || '',
-          groupName: d.profiles?.group_name || '',
-          yearId: d.profiles?.year_id || '5',
-          lessonTitle: d.lessons?.title || 'درس',
-        }))
-      }
-    } catch (err) {
-      console.warn('fetchAllHomeworkSubmissions error:', err)
-    }
-  }
-
-  try {
-    const raw = localStorage.getItem('physics_hub_all_hw_submissions')
-    if (raw) return JSON.parse(raw)
-  } catch (_) {}
-
-  return []
-}
-
-/**
- * Fetch all homework submissions for one student.
- */
-export async function fetchSubmissionsForStudentLessons(studentId) {
-  if (!studentId) return []
-
-  if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('homework_submissions')
-        .select('*, lessons:lesson_id (id, title, year_id, branch, unit)')
-        .eq('student_id', studentId)
-        .order('submitted_at', { ascending: false })
-
-      if (!error && Array.isArray(data)) {
-        return data.map((d) => normalizeHomeworkSubmissionRow(d, {
-          lessonTitle: d.lessons?.title || 'درس',
-          branch: d.lessons?.branch || '',
-          unit: d.lessons?.unit || '',
-        }))
-      }
-    } catch (err) {
-      console.warn('fetchSubmissionsForStudentLessons error:', err)
-    }
-  }
-
-  try {
-    const allRaw = JSON.parse(localStorage.getItem('physics_hub_all_hw_submissions') || '[]')
-    return allRaw.filter((s) => s.studentId === studentId)
-  } catch (_) {}
-
-  return []
-}
-
 // =====================================================================
 // VIDEOS API
 // =====================================================================
 export async function fetchVideos({ yearId = null, publishedOnly = true } = {}) {
-  if (isSupabaseConfigured()) {
-    try {
-      let query = supabase.from('videos').select('*').order('sort_order', { ascending: true })
-      if (publishedOnly) query = query.eq('is_published', true)
-      if (yearId && yearId !== 'all') query = query.eq('year_id', String(yearId))
-
-      const { data, error } = await query
-      if (!error && data) return data
-    } catch (err) {
-      console.warn('fetchVideos Supabase error:', err)
-    }
-  }
-  return []
+  if (!isSupabaseConfigured()) return []
+  let query = supabase.from('videos').select('*').order('sort_order', { ascending: true })
+  if (publishedOnly) query = query.eq('is_published', true)
+  if (yearId && yearId !== 'all') query = query.eq('year_id', String(yearId))
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
 }
 
 export async function createVideo(payload) {
@@ -542,7 +353,7 @@ export async function createVideo(payload) {
       {
         title: payload.title,
         description: payload.description || null,
-        youtube_url: payload.youtubeUrl,
+        youtube_url: optionalHttpsUrl(payload.youtubeUrl, 'YouTube URL'),
         year_id: String(payload.yearId || '5'),
         unit: payload.unit || null,
         is_published: payload.isPublished !== false,
@@ -560,7 +371,7 @@ export async function updateVideo(id, payload) {
     .update({
       title: payload.title,
       description: payload.description || null,
-      youtube_url: payload.youtubeUrl,
+      youtube_url: optionalHttpsUrl(payload.youtubeUrl, 'YouTube URL'),
       year_id: String(payload.yearId || '5'),
       unit: payload.unit || null,
       is_published: payload.isPublished !== false,
@@ -581,17 +392,12 @@ export async function deleteVideo(id) {
 // QUIZZES + GRADES
 // =====================================================================
 export async function fetchQuizzes({ yearId = null } = {}) {
-  if (isSupabaseConfigured()) {
-    try {
-      let query = supabase.from('quizzes').select('*').order('quiz_date', { ascending: false })
-      if (yearId && yearId !== 'all') query = query.eq('year_id', String(yearId))
-      const { data, error } = await query
-      if (!error && data) return data
-    } catch (err) {
-      console.warn('fetchQuizzes error:', err)
-    }
-  }
-  return []
+  if (!isSupabaseConfigured()) return []
+  let query = supabase.from('quizzes').select('*').order('quiz_date', { ascending: false })
+  if (yearId && yearId !== 'all') query = query.eq('year_id', String(yearId))
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
 }
 
 export async function createQuiz(payload) {
@@ -656,11 +462,6 @@ export async function upsertGrade({ quizId, studentId, score, notes }) {
   return data?.[0]
 }
 
-export async function deleteGrade(id) {
-  const { error } = await supabase.from('grades').delete().eq('id', id)
-  if (error) throw error
-}
-
 // =====================================================================
 // HOMEWORK ENTRIES  (Unified "Homework" module — formerly "Assignments")
 // =====================================================================
@@ -696,6 +497,7 @@ export function normalizeHomeworkEntry(row = {}) {
     // Explanation video: unlocked for the student only once their
     // submission is graded (see pages/HomeworkPage.jsx).
     explanationVideoUrl: row.explanation_video_url || '',
+    hasExplanationVideo: row.has_explanation_video ?? Boolean(row.explanation_video_url),
     explanationVideoTitle: row.explanation_video_title || '',
     isPublished: row.is_published !== false,
     groupName: row.group_name || '',
@@ -703,19 +505,6 @@ export function normalizeHomeworkEntry(row = {}) {
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null,
   }
-}
-
-const HOMEWORK_ENTRY_COLUMNS =
-  'id, title, description, year_id, branch, due_date, max_score, total_points, questions, ' +
-  'attachment_url, explanation_video_url, explanation_video_title, is_published, group_name, ' +
-  'created_by, created_at, updated_at'
-
-/** Columns added by homework-grading.sql — dropped when the DB is older. */
-function stripEntryVideoColumns(row) {
-  const clone = { ...row }
-  delete clone.explanation_video_url
-  delete clone.explanation_video_title
-  return clone
 }
 
 /** Seed a couple of demo entries for the localStorage (no-Supabase) mode. */
@@ -775,22 +564,17 @@ function seedHomeworkEntriesLocal() {
  */
 export async function fetchHomeworkEntries({ yearId = null, groupName = null, publishedOnly = false } = {}) {
   if (isSupabaseConfigured()) {
-    try {
-      // select('*') keeps existing installs working even before the
-      // questions / total_points / group_name columns are added.
-      let query = supabase
-        .from('assignments')
-        .select('*')
-        .order('created_at', { ascending: false })
-      if (yearId && yearId !== 'all') query = query.eq('year_id', String(yearId))
-      if (groupName && groupName !== 'all') query = query.eq('group_name', groupName)
-      if (publishedOnly) query = query.eq('is_published', true)
+    let query = supabase
+      .from('homework_catalog')
+      .select('*')
+      .order('created_at', { ascending: false })
+    if (yearId && yearId !== 'all') query = query.eq('year_id', String(yearId))
+    if (groupName && groupName !== 'all') query = query.eq('group_name', groupName)
+    if (publishedOnly) query = query.eq('is_published', true)
 
-      const { data, error } = await query
-      if (!error && Array.isArray(data)) return data.map(normalizeHomeworkEntry)
-    } catch (err) {
-      console.warn('fetchHomeworkEntries error:', err)
-    }
+    const { data, error } = await query
+    if (error) throw error
+    return (data || []).map(normalizeHomeworkEntry)
   }
 
   // LocalStorage fallback (demo / offline mode)
@@ -815,29 +599,23 @@ export async function createHomeworkEntry(payload) {
   const questions = Array.isArray(payload.questions) ? payload.questions : []
   const totalPoints = computeHomeworkTotalPoints(questions) || Number(payload.maxScore) || 0
   const row = {
-    title: payload.title,
-    description: payload.description || null,
+    title: String(payload.title || '').trim(),
+    description: String(payload.description || '').trim() || null,
     year_id: String(payload.yearId || '5'),
-    branch: payload.branch || null,
+    branch: String(payload.branch || '').trim() || null,
     due_date: payload.dueDate || null,
     max_score: totalPoints || Number(payload.maxScore) || 100,
     total_points: totalPoints || null,
     questions,
-    attachment_url: payload.attachmentUrl || null,
-    explanation_video_url: payload.explanationVideoUrl || null,
-    explanation_video_title: payload.explanationVideoTitle || null,
+    attachment_url: optionalHttpsUrl(payload.attachmentUrl, 'Attachment URL'),
+    explanation_video_url: optionalHttpsUrl(payload.explanationVideoUrl, 'Explanation video URL'),
+    explanation_video_title: String(payload.explanationVideoTitle || '').trim() || null,
     is_published: payload.isPublished !== false,
     group_name: payload.groupName || null,
   }
 
   if (isSupabaseConfigured()) {
-    let { data, error } = await supabase.from('assignments').insert([row]).select('*')
-    if (error && isMissingColumnError(error)) {
-      console.warn('assignments is missing the explanation-video columns — run homework-grading.sql.')
-      const legacy = await supabase.from('assignments').insert([stripEntryVideoColumns(row)]).select('*')
-      data = legacy.data
-      error = legacy.error
-    }
+    const { data, error } = await supabase.from('assignments').insert([row]).select('*')
     if (error) throw error
     return normalizeHomeworkEntry(data?.[0])
   }
@@ -863,33 +641,23 @@ export async function updateHomeworkEntry(id, payload) {
   const questions = Array.isArray(payload.questions) ? payload.questions : []
   const totalPoints = computeHomeworkTotalPoints(questions) || Number(payload.maxScore) || 0
   const row = {
-    title: payload.title,
-    description: payload.description || null,
+    title: String(payload.title || '').trim(),
+    description: String(payload.description || '').trim() || null,
     year_id: String(payload.yearId || '5'),
-    branch: payload.branch || null,
+    branch: String(payload.branch || '').trim() || null,
     due_date: payload.dueDate || null,
     max_score: totalPoints || Number(payload.maxScore) || 100,
     total_points: totalPoints || null,
     questions,
-    attachment_url: payload.attachmentUrl || null,
-    explanation_video_url: payload.explanationVideoUrl || null,
-    explanation_video_title: payload.explanationVideoTitle || null,
+    attachment_url: optionalHttpsUrl(payload.attachmentUrl, 'Attachment URL'),
+    explanation_video_url: optionalHttpsUrl(payload.explanationVideoUrl, 'Explanation video URL'),
+    explanation_video_title: String(payload.explanationVideoTitle || '').trim() || null,
     is_published: payload.isPublished !== false,
     group_name: payload.groupName || null,
   }
 
   if (isSupabaseConfigured()) {
-    let { data, error } = await supabase.from('assignments').update(row).eq('id', id).select('*')
-    if (error && isMissingColumnError(error)) {
-      console.warn('assignments is missing the explanation-video columns — run homework-grading.sql.')
-      const legacy = await supabase
-        .from('assignments')
-        .update(stripEntryVideoColumns(row))
-        .eq('id', id)
-        .select('*')
-      data = legacy.data
-      error = legacy.error
-    }
+    const { data, error } = await supabase.from('assignments').update(row).eq('id', id).select('*')
     if (error) throw error
     return normalizeHomeworkEntry(data?.[0])
   }
@@ -921,20 +689,6 @@ export async function deleteHomeworkEntry(id) {
       group_name: e.groupName, created_at: e.createdAt,
     }))))
   } catch (_) {}
-}
-
-/**
- * Extra grading columns on `submissions` (added by homework-grading.sql).
- */
-const SUBMISSION_GRADE_COLUMNS = [
-  'answers', 'correct_count', 'incorrect_count', 'unanswered_count',
-  'percentage', 'total_points', 'breakdown', 'auto_graded',
-]
-
-function stripSubmissionGradeColumns(payload) {
-  const clone = { ...payload }
-  SUBMISSION_GRADE_COLUMNS.forEach((c) => delete clone[c])
-  return clone
 }
 
 /**
@@ -994,17 +748,13 @@ export function normalizeAssignmentSubmission(row = {}, entry = null) {
  */
 export async function fetchSubmissionsForAssignment(assignmentId, entry = null) {
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('submissions')
-        .select('*, profiles:student_id (id, full_name, phone, parent_phone, group_name, year_id)')
-        .eq('assignment_id', assignmentId)
-        .order('submitted_at', { ascending: false })
-      if (!error && Array.isArray(data)) return data.map((r) => normalizeAssignmentSubmission(r, entry))
-      if (error) throw error
-    } catch (err) {
-      console.warn('fetchSubmissionsForAssignment error:', err)
-    }
+    const { data, error } = await supabase
+      .from('submissions')
+      .select('*, profiles:student_id (id, full_name, phone, parent_phone, group_name, year_id)')
+      .eq('assignment_id', assignmentId)
+      .order('submitted_at', { ascending: false })
+    if (error) throw error
+    return (data || []).map((row) => normalizeAssignmentSubmission(row, entry))
   }
 
   // LocalStorage fallback for demo grading
@@ -1046,24 +796,10 @@ function saveLocalAssignmentSubmission(assignmentId, payload) {
  * grading columns when the database has not been migrated yet.
  */
 async function upsertSubmissionRow(payload) {
-  let { data, error } = await supabase
+  const { data, error } = await supabase
     .from('submissions')
     .upsert(payload, { onConflict: 'assignment_id,student_id' })
     .select()
-
-  if (error && isMissingColumnError(error)) {
-    console.warn(
-      'submissions is missing the grading columns — run homework-grading.sql to enable ' +
-      'answer-key marking analytics. Falling back to the base columns.'
-    )
-    const legacy = await supabase
-      .from('submissions')
-      .upsert(stripSubmissionGradeColumns(payload), { onConflict: 'assignment_id,student_id' })
-      .select()
-    data = legacy.data
-    error = legacy.error
-  }
-
   if (error) throw error
   return data?.[0]
 }
@@ -1094,52 +830,24 @@ export async function submitAssignmentAnswers({
   const local = gradeSubmissionAgainstKey({ questions, answers })
 
   if (isSupabaseConfigured()) {
-    // 1) Server-side authoritative marking
-    try {
-      const { data, error } = await supabase.rpc('grade_assignment_submission', {
-        p_assignment_id: assignmentId,
-        p_answers: answers,
-        p_content: content,
-        p_file_url: fileUrl,
-      })
-      if (!error && data) {
-        const r = Array.isArray(data) ? data[0] : data
-        return {
-          totalQuestions: Number(r.total_questions ?? local.totalQuestions) || 0,
-          correctCount: Number(r.correct_count ?? local.correctCount) || 0,
-          incorrectCount: Number(r.incorrect_count ?? local.incorrectCount) || 0,
-          unansweredCount: Number(r.unanswered_count ?? local.unansweredCount) || 0,
-          earnedPoints: Number(r.score ?? local.earnedPoints) || 0,
-          totalPoints: Number(r.total_points ?? local.totalPoints) || 0,
-          percentage: Math.round(Number(r.percentage ?? local.percentage)) || 0,
-          breakdown: r.breakdown || local.breakdown,
-          gradedOnServer: true,
-        }
-      }
-      if (error) throw error
-    } catch (err) {
-      console.warn(
-        'grade_assignment_submission RPC unavailable (run homework-grading.sql) — ' +
-        'falling back to client-side marking:', err.message || err
-      )
-    }
-
-    // 2) Fallback: store the answers; score is written when the RLS/trigger
-    //    guard allows it (admin) and re-derived from the key otherwise.
-    try {
-      const row = await upsertSubmissionRow({
-        assignment_id: assignmentId,
-        student_id: studentId,
-        content,
-        file_url: fileUrl,
-        answers,
-        status: 'submitted',
-        submitted_at: new Date().toISOString(),
-      })
-      return { ...local, submission: row, gradedOnServer: false }
-    } catch (err) {
-      console.warn('submitAssignmentAnswers upsert error:', err)
-      throw err
+    const { data, error } = await supabase.rpc('grade_assignment_submission', {
+      p_assignment_id: assignmentId,
+      p_answers: answers,
+      p_content: content,
+      p_file_url: fileUrl,
+    })
+    if (error) throw new Error(error.message || 'Server-side grading failed')
+    const row = Array.isArray(data) ? data[0] : data
+    return {
+      totalQuestions: Number(row?.total_questions) || 0,
+      correctCount: Number(row?.correct_count) || 0,
+      incorrectCount: Number(row?.incorrect_count) || 0,
+      unansweredCount: Number(row?.unanswered_count) || 0,
+      earnedPoints: Number(row?.score) || 0,
+      totalPoints: Number(row?.total_points) || 0,
+      percentage: Math.round(Number(row?.percentage)) || 0,
+      breakdown: row?.breakdown || [],
+      gradedOnServer: true,
     }
   }
 
@@ -1235,6 +943,20 @@ export async function autoGradeAssignmentSubmissions(entry) {
   const questions = entry.questions || []
   if (!questions.length) throw new Error('This homework entry has no questions / answer key')
 
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('regrade_assignment', { p_assignment_id: entry.id })
+    if (error) throw error
+    const results = (data || []).map((row) => ({
+      studentId: row.student_id,
+      earnedPoints: Number(row.score) || 0,
+      score: Number(row.score) || 0,
+      correctCount: Number(row.correct_count) || 0,
+      incorrectCount: Number(row.incorrect_count) || 0,
+      percentage: Number(row.percentage) || 0,
+    }))
+    return { graded: results.length, skipped: 0, failed: 0, rows: results, stats: summarizeGrades(results) }
+  }
+
   const rows = await fetchSubmissionsForAssignment(entry.id, entry)
   const results = []
   let graded = 0
@@ -1272,25 +994,13 @@ export async function autoGradeAssignmentSubmissions(entry) {
 
 export async function fetchSubmissionsForStudent(studentId) {
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('submissions')
-        .select('*, assignments:assignment_id (title, max_score, total_points, questions, due_date)')
-        .eq('student_id', studentId)
-        .order('submitted_at', { ascending: false })
-      if (!error && data) {
-        return data.map((r) =>
-          normalizeAssignmentSubmission(r, {
-            questions: r.assignments?.questions || [],
-            totalPoints: r.assignments?.total_points,
-            maxScore: r.assignments?.max_score,
-          })
-        )
-      }
-      if (error) throw error
-    } catch (err) {
-      console.warn('fetchSubmissionsForStudent error:', err)
-    }
+    const { data, error } = await supabase
+      .from('submissions')
+      .select('*')
+      .eq('student_id', studentId)
+      .order('submitted_at', { ascending: false })
+    if (error) throw error
+    return (data || []).map((row) => normalizeAssignmentSubmission(row))
   }
 
   // LocalStorage fallback: demo grades saved from the Homework module
@@ -1354,33 +1064,27 @@ export async function submitAssignment({
   })
 }
 
-export async function gradeSubmission(id, { score, feedback }) {
-  const { data, error } = await supabase
-    .from('submissions')
-    .update({
-      score: score === '' || score === null ? null : Number(score),
-      feedback: feedback || null,
-      status: 'graded',
-      graded_at: new Date().toISOString(),
-    })
-    .eq('id', id)
-    .select()
-  if (error) throw error
-  return data?.[0]
-}
-
 export async function uploadSubmissionFile(studentId, file) {
-  const safeName = file.name.replace(/[^\w.\-]/g, '_')
-  const path = `${studentId}/${Date.now()}-${safeName}`
+  if (!isSupabaseConfigured()) throw new Error('File uploads require a configured Supabase project')
+  if (!file || file.size <= 0 || file.size > MAX_SUBMISSION_FILE_BYTES) {
+    throw new Error('The file must be non-empty and no larger than 10 MB')
+  }
+  const extension = String(file.name || '').split('.').pop()?.toLowerCase()
+  if (!SUBMISSION_FILE_TYPES.has(file.type) || !SUBMISSION_FILE_EXTENSIONS.has(extension)) {
+    throw new Error('Only PDF, JPEG, PNG and WebP files are accepted')
+  }
 
+  const randomPart = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const path = `${studentId}/${randomPart}.${extension}`
   const { error } = await supabase.storage.from('submissions').upload(path, file, {
     cacheControl: '3600',
+    contentType: file.type,
     upsert: false,
   })
   if (error) throw error
 
-  const { data } = supabase.storage.from('submissions').getPublicUrl(path)
-  return data.publicUrl
+  // The bucket is private. Store the object path, never a permanent public URL.
+  return path
 }
 
 // =====================================================================
@@ -1407,24 +1111,6 @@ export async function fetchAttendanceByDate(sessionDate) {
   return data || []
 }
 
-export async function upsertAttendance({ studentId, sessionDate, status, yearId, notes }) {
-  const { data, error } = await supabase
-    .from('attendance')
-    .upsert(
-      {
-        student_id: studentId,
-        session_date: sessionDate,
-        status,
-        year_id: yearId ? String(yearId) : null,
-        notes: notes || null,
-      },
-      { onConflict: 'student_id,session_date' }
-    )
-    .select()
-  if (error) throw error
-  return data?.[0]
-}
-
 export async function bulkUpsertAttendance(rows) {
   if (!rows.length) return []
   const { data, error } = await supabase
@@ -1449,14 +1135,11 @@ export async function bulkUpsertAttendance(rows) {
 // =====================================================================
 export async function fetchStudentAnalytics(studentId = null) {
   if (isSupabaseConfigured()) {
-    try {
-      let query = supabase.from('student_analytics').select('*')
-      if (studentId) query = query.eq('student_id', studentId)
-      const { data, error } = await query
-      if (!error && data) return studentId ? data?.[0] || null : data
-    } catch (err) {
-      console.warn('fetchStudentAnalytics error:', err)
-    }
+    let query = supabase.from('student_analytics').select('*')
+    if (studentId) query = query.eq('student_id', studentId)
+    const { data, error } = await query
+    if (error) throw error
+    return studentId ? data?.[0] || null : data || []
   }
 
   // Fallback demo analytics
@@ -1476,6 +1159,7 @@ export async function fetchStudentAnalytics(studentId = null) {
     }
   }
 
+  const { SAMPLE_STUDENTS } = await import('../data/dummyData.js')
   return SAMPLE_STUDENTS.map((s) => ({
     student_id: s.id,
     full_name: s.full_name,
@@ -1499,53 +1183,36 @@ export async function fetchStudentAnalytics(studentId = null) {
 // =====================================================================
 export async function fetchStudents() {
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('role', 'student')
-        .order('created_at', { ascending: false })
-
-      if (!error && data && data.length > 0) {
-        return data.map((s) => ({
-          id: s.id,
-          full_name: s.full_name,
-          phone: s.phone,
-          parent_phone: s.parent_phone,
-          year_id: s.year_id,
-          group_name: s.group_name || '',
-          group_id: s.group_id || null,
-          governorate: s.governorate,
-          is_active: s.is_active !== false,
-          role: s.role || 'student',
-          created_at: s.created_at,
-        }))
-      }
-    } catch (err) {
-      console.warn('fetchStudents error:', err)
-    }
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, full_name, phone, parent_phone, year_id, group_name, group_id, governorate, is_active, role, created_at')
+      .eq('role', 'student')
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    return (data || []).map((student) => ({
+      ...student,
+      group_name: student.group_name || '',
+      group_id: student.group_id || null,
+      is_active: student.is_active !== false,
+    }))
   }
 
-  // Load from local storage or fallback sample
   try {
     const raw = localStorage.getItem('physics_hub_sample_students')
     if (raw) return JSON.parse(raw)
   } catch (_) {}
-
-  return SAMPLE_STUDENTS
+  return (await import('../data/dummyData.js')).SAMPLE_STUDENTS
 }
 
 export async function updateOwnProfile(id, payload) {
   const updateData = {
-    full_name: payload.fullName,
-    phone: payload.phone,
-    parent_phone: payload.parentPhone,
-    governorate: payload.governorate,
-    year_id: String(payload.yearId),
+    full_name: String(payload.fullName || '').trim().replace(/\s+/g, ' '),
+    phone: String(payload.phone || '').trim(),
+    parent_phone: String(payload.parentPhone || '').trim(),
+    governorate: String(payload.governorate || '').trim(),
   }
-
-  if (payload.groupName !== undefined) {
-    updateData.group_name = payload.groupName
+  if (updateData.full_name.length < 2 || updateData.full_name.length > 120) {
+    throw new Error('Name must be between 2 and 120 characters')
   }
 
   if (isSupabaseConfigured()) {
@@ -1593,22 +1260,17 @@ function normalizeReportRow(r) {
 
 export async function fetchBulkMessagingReport({ yearId = null, groupName = null } = {}) {
   if (isSupabaseConfigured()) {
-    try {
-      const { data, error } = await supabase.rpc('bulk_messaging_report', {
-        target_year: yearId || null,
-      })
-      if (!error && Array.isArray(data) && data.length > 0) {
-        let rows = data.map(normalizeReportRow)
-        if (groupName && groupName !== 'all') {
-          rows = rows.filter((r) => r.group_name === groupName)
-        }
-        return rows
-      }
-    } catch (err) {
-      console.warn('bulk_messaging_report RPC unavailable, falling back to client assembly', err)
-    }
+    const { data, error } = await supabase.rpc('bulk_messaging_report', {
+      target_year: yearId && yearId !== 'all' ? yearId : null,
+    })
+    if (error) throw new Error('Bulk report RPC unavailable. Apply bulk-messaging.sql.')
+    let rows = (data || []).map(normalizeReportRow)
+    if (groupName && groupName !== 'all') rows = rows.filter((row) => row.group_name === groupName)
+    return rows
   }
 
+  // Offline demo fallback. Production uses the set-based RPC above and
+  // therefore avoids this per-student assembly path.
   // Fallback: build shape from existing student records
   const allStudents = await fetchStudents()
   let students = allStudents.filter((s) => !yearId || yearId === 'all' || s.year_id === yearId)
@@ -1697,7 +1359,7 @@ export async function fetchStudentHomeworkFeed({ studentId, yearId = null, group
       const submission = raw ? normalizeAssignmentSubmission(raw, entry) : null
       const status = deriveHomeworkStatus(entry, submission)
       const isGraded = status === 'graded'
-      const hasVideo = Boolean(entry.explanationVideoUrl)
+      const hasVideo = entry.hasExplanationVideo ?? Boolean(entry.explanationVideoUrl)
 
       return {
         entry,

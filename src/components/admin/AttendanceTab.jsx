@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { CalendarCheck, Loader2, Save, CheckCircle2 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
-import { YEARS } from '../../data/dummyData'
+import { YEARS } from '../../data/catalog'
 import { fetchAttendanceByDate, bulkUpsertAttendance, fetchGroups } from '../../lib/api'
 import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 

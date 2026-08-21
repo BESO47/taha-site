@@ -23,7 +23,7 @@ export function getStatus() {
     ready: ok,
     qr: null,
     needsScan: false,
-    me: ok ? { id: config.webhook.url } : null,
+    me: ok ? { id: 'configured-webhook' } : null,
     lastError: ok ? null : 'WA_WEBHOOK_URL missing',
   }
 }
@@ -44,7 +44,16 @@ export async function sendMessage(phone, message, meta = {}) {
     headers[config.webhook.authHeader] = config.webhook.authValue
   }
 
+  const safeMeta = {
+    studentId: String(meta.studentId || '').slice(0, 100) || null,
+    studentName: String(meta.studentName || '').slice(0, 120),
+    groupName: String(meta.groupName || '').slice(0, 80),
+    recipientType: meta.recipientType === 'parent' ? 'parent' : 'student',
+  }
+  // Authoritative delivery fields come last so metadata can never override
+  // the recipient or message sent to the relay.
   const payload = {
+    ...safeMeta,
     to: normalized,
     phone: normalized,
     formattedPhone: `+${normalized}`,
@@ -52,7 +61,6 @@ export async function sendMessage(phone, message, meta = {}) {
     message,
     body: message,
     text: message,
-    ...meta,
     timestamp: new Date().toISOString(),
   }
 

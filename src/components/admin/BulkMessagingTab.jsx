@@ -6,11 +6,9 @@ import {
   Pause, Play, Ban, QrCode, Wifi, WifiOff, LogOut, Zap, FlaskConical
 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
-import { YEARS } from '../../data/dummyData'
+import { YEARS } from '../../data/catalog'
 import { fetchBulkMessagingReport, fetchGroups } from '../../lib/api'
 import {
-  isWebhookConfigured,
-  dispatchBulkWhatsAppQueue,
   dispatchWhatsAppLinksSequentially,
   dispatchBulkViaGateway,
   gatewayControls,
@@ -402,31 +400,6 @@ export default function BulkMessagingTab() {
       return
     }
 
-    // ---------------- 2) Direct webhook ----------------
-    if (info?.mode === 'webhook' || isWebhookConfigured()) {
-      setIsDispatching(true)
-      queueControllerRef.current = createQueueController()
-      abortControllerRef.current = new AbortController()
-      try {
-        const result = await dispatchBulkWhatsAppQueue(messages, {
-          delayMs: delaySec * 1000,
-          onProgress: (prog) => setProgressState(prog),
-          signal: abortControllerRef.current.signal,
-          controller: queueControllerRef.current,
-        })
-        setIsDispatching(false)
-        setProgressState(null)
-        queueControllerRef.current = null
-        setDispatchSummary(result)
-      } catch (err) {
-        console.error('Dispatch error:', err)
-        alert(err.message)
-        setIsDispatching(false)
-        setProgressState(null)
-        queueControllerRef.current = null
-      }
-      return
-    }
     // Manual sequential path
     setIsDispatching(true)
     queueControllerRef.current = createQueueController()
@@ -526,9 +499,7 @@ export default function BulkMessagingTab() {
                 <p className="text-sm font-extrabold">
                   {transport?.mode === 'gateway'
                     ? (lang === 'ar' ? 'بوابة واتساب (إرسال آلي)' : 'WhatsApp gateway (automatic sending)')
-                    : transport?.mode === 'webhook'
-                      ? (lang === 'ar' ? 'وضع الويب هوك' : 'Webhook mode')
-                      : (lang === 'ar' ? 'الوضع اليدوي عبر واتساب ويب' : 'Manual WhatsApp Web mode')}
+                    : (lang === 'ar' ? 'الوضع اليدوي عبر واتساب ويب' : 'Manual WhatsApp Web mode')}
                 </p>
                 <p className="text-[11px] text-slate-500 font-bold">
                   {transport?.status?.provider ? `${transport.status.provider} · ` : ''}

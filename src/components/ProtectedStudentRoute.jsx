@@ -18,7 +18,25 @@ export default function ProtectedStudentRoute({ children }) {
 
   if (!session) return <Navigate to="/login" replace />
 
-  if (profile && !isActive) {
+  // A valid Auth session without an application profile is not an
+  // authorized student. Fail closed instead of rendering protected routes.
+  if (!profile) {
+    return (
+      <div className="min-h-[70vh] flex flex-col items-center justify-center gap-4 text-center px-4 font-ibm">
+        <AlertTriangle className="w-14 h-14 text-amber-500" />
+        <h2 className="text-xl font-bold text-slate-800 dark:text-white">
+          {lang === 'ar' ? 'تعذر تحميل ملف الطالب' : 'Student profile unavailable'}
+        </h2>
+        <p className="text-sm text-slate-500 max-w-md">
+          {lang === 'ar'
+            ? 'سجّل الخروج ثم الدخول مرة أخرى. إذا استمرت المشكلة فتواصل مع المدرس.'
+            : 'Sign out and back in. Contact the teacher if the problem continues.'}
+        </p>
+      </div>
+    )
+  }
+
+  if (!isActive) {
     return (
       <div className="min-h-[70vh] flex flex-col items-center justify-center gap-4 text-center px-4 font-ibm">
         <AlertTriangle className="w-14 h-14 text-red-500" />

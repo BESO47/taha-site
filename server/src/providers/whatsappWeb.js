@@ -74,8 +74,6 @@ export async function start() {
           '--disable-gpu',
         ],
       },
-      // Pin the web version so a WhatsApp Web update cannot break the client
-      webVersionCache: { type: 'remote', remotePath: process.env.WA_WEB_VERSION_URL || undefined },
     })
 
     client.on('qr', async (qr) => {
@@ -105,6 +103,7 @@ export async function start() {
     })
 
     client.on('ready', () => {
+      state.restartCount = 0
       setStatus('ready', {
         qr: null,
         qrDataUrl: null,

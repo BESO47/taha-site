@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Award, Plus, Trash2, Loader2, Save, X, ClipboardCheck } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
-import { YEARS } from '../../data/dummyData'
+import { YEARS } from '../../data/catalog'
 import {
   fetchQuizzes, createQuiz, deleteQuiz,
   fetchGradesForQuiz, upsertGrade, fetchGroups,
