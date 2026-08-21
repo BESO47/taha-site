@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { LESSONS, PAST_EXAMS, SAMPLE_STUDENTS, DEFAULT_GROUPS } from '../data/dummyData'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -11,7 +12,10 @@ export const supabase = createClient(
 export const isSupabaseConfigured = () => {
   return (
     import.meta.env.VITE_SUPABASE_URL &&
-    import.meta.env.VITE_SUPABASE_URL.includes('supabase.co')
+    import.meta.env.VITE_SUPABASE_URL.includes('supabase.co') &&
+    import.meta.env.VITE_SUPABASE_ANON_KEY &&
+    import.meta.env.VITE_SUPABASE_ANON_KEY !== 'your-anon-public-key' &&
+    import.meta.env.VITE_SUPABASE_ANON_KEY !== 'dummy'
   )
 }
 
@@ -19,16 +23,16 @@ export const isSupabaseConfigured = () => {
 // LESSONS API
 // ----------------------------------------------------------------------
 export async function fetchLessonsFromSupabase() {
-  if (!isSupabaseConfigured()) return []
+  if (!isSupabaseConfigured()) return LESSONS
   try {
     const { data, error } = await supabase
       .from('lessons')
       .select('*')
       .order('created_at', { ascending: false })
 
-    if (error) {
-      console.error('Error fetching lessons:', error)
-      return []
+    if (error || !data || data.length === 0) {
+      console.warn('Supabase lessons empty or error, using default lessons:', error)
+      return LESSONS
     }
 
     return (data || []).map((l) => ({
@@ -46,15 +50,21 @@ export async function fetchLessonsFromSupabase() {
       summaryPdfUrl: l.summary_pdf_url,
       description: l.description,
       quiz: l.quiz_json || [],
+      modelAnswers: l.model_answers || {},
+      homeworkQuestions: l.homework_questions || [],
+      homeworkPdfName: l.homework_pdf_name,
+      homeworkPdfUrl: l.homework_pdf_url,
     }))
   } catch (err) {
     console.error('Unexpected error fetching lessons:', err)
-    return []
+    return LESSONS
   }
 }
 
 export async function fetchLessonByIdFromSupabase(lessonId) {
-  if (!isSupabaseConfigured()) return null
+  if (!isSupabaseConfigured()) {
+    return LESSONS.find((l) => String(l.id) === String(lessonId)) || null
+  }
   try {
     const { data, error } = await supabase
       .from('lessons')
@@ -62,7 +72,9 @@ export async function fetchLessonByIdFromSupabase(lessonId) {
       .eq('id', lessonId)
       .single()
 
-    if (error || !data) return null
+    if (error || !data) {
+      return LESSONS.find((l) => String(l.id) === String(lessonId)) || null
+    }
 
     return {
       id: data.id,
@@ -79,9 +91,13 @@ export async function fetchLessonByIdFromSupabase(lessonId) {
       summaryPdfUrl: data.summary_pdf_url,
       description: data.description,
       quiz: data.quiz_json || [],
+      modelAnswers: data.model_answers || {},
+      homeworkQuestions: data.homework_questions || [],
+      homeworkPdfName: data.homework_pdf_name,
+      homeworkPdfUrl: data.homework_pdf_url,
     }
   } catch (err) {
-    return null
+    return LESSONS.find((l) => String(l.id) === String(lessonId)) || null
   }
 }
 
@@ -100,6 +116,16 @@ export async function createLessonInSupabase(lessonData) {
     summary_pdf_url: lessonData.summaryPdfUrl || null,
     description: lessonData.description || '',
     quiz_json: lessonData.quiz || [],
+    model_answers: lessonData.modelAnswers || {},
+    homework_questions: lessonData.homeworkQuestions || [],
+    homework_pdf_name: lessonData.homeworkPdfName || null,
+    homework_pdf_url: lessonData.homeworkPdfUrl || null,
+  }
+
+  if (!isSupabaseConfigured()) {
+    const newLesson = { id: `lesson-${Date.now()}`, ...payload }
+    LESSONS.unshift(newLesson)
+    return newLesson
   }
 
   const { data, error } = await supabase.from('lessons').insert([payload]).select()
@@ -121,6 +147,19 @@ export async function updateLessonInSupabase(id, lessonData) {
     summary_pdf_url: lessonData.summaryPdfUrl || null,
     description: lessonData.description || '',
     quiz_json: lessonData.quiz || [],
+    model_answers: lessonData.modelAnswers || {},
+    homework_questions: lessonData.homeworkQuestions || [],
+    homework_pdf_name: lessonData.homeworkPdfName || null,
+    homework_pdf_url: lessonData.homeworkPdfUrl || null,
+  }
+
+  if (!isSupabaseConfigured()) {
+    const idx = LESSONS.findIndex((l) => String(l.id) === String(id))
+    if (idx !== -1) {
+      LESSONS[idx] = { ...LESSONS[idx], ...payload }
+      return LESSONS[idx]
+    }
+    return { id, ...payload }
   }
 
   const { data, error } = await supabase
@@ -134,6 +173,11 @@ export async function updateLessonInSupabase(id, lessonData) {
 }
 
 export async function deleteLessonFromSupabase(id) {
+  if (!isSupabaseConfigured()) {
+    const idx = LESSONS.findIndex((l) => String(l.id) === String(id))
+    if (idx !== -1) LESSONS.splice(idx, 1)
+    return
+  }
   const { error } = await supabase.from('lessons').delete().eq('id', id)
   if (error) throw error
 }
@@ -142,16 +186,15 @@ export async function deleteLessonFromSupabase(id) {
 // PAST EXAMS API
 // ----------------------------------------------------------------------
 export async function fetchPastExamsFromSupabase() {
-  if (!isSupabaseConfigured()) return []
+  if (!isSupabaseConfigured()) return PAST_EXAMS
   try {
     const { data, error } = await supabase
       .from('past_exams')
       .select('*')
       .order('created_at', { ascending: false })
 
-    if (error) {
-      console.error('Error fetching past exams:', error)
-      return []
+    if (error || !data || data.length === 0) {
+      return PAST_EXAMS
     }
 
     return (data || []).map((e) => ({
@@ -168,8 +211,7 @@ export async function fetchPastExamsFromSupabase() {
       videoSolutionUrl: e.video_solution_url,
     }))
   } catch (err) {
-    console.error('Unexpected error fetching past exams:', err)
-    return []
+    return PAST_EXAMS
   }
 }
 
@@ -185,6 +227,12 @@ export async function createPastExamInSupabase(examData) {
     pdf_size: examData.pdfSize || '2.0 MB',
     pdf_url: examData.pdfUrl || null,
     video_solution_url: examData.videoSolutionUrl || null,
+  }
+
+  if (!isSupabaseConfigured()) {
+    const newExam = { id: `exam-${Date.now()}`, ...payload }
+    PAST_EXAMS.unshift(newExam)
+    return newExam
   }
 
   const { data, error } = await supabase.from('past_exams').insert([payload]).select()
@@ -206,6 +254,15 @@ export async function updatePastExamInSupabase(id, examData) {
     video_solution_url: examData.videoSolutionUrl || null,
   }
 
+  if (!isSupabaseConfigured()) {
+    const idx = PAST_EXAMS.findIndex((e) => String(e.id) === String(id))
+    if (idx !== -1) {
+      PAST_EXAMS[idx] = { ...PAST_EXAMS[idx], ...payload }
+      return PAST_EXAMS[idx]
+    }
+    return { id, ...payload }
+  }
+
   const { data, error } = await supabase
     .from('past_exams')
     .update(payload)
@@ -217,6 +274,11 @@ export async function updatePastExamInSupabase(id, examData) {
 }
 
 export async function deletePastExamFromSupabase(id) {
+  if (!isSupabaseConfigured()) {
+    const idx = PAST_EXAMS.findIndex((e) => String(e.id) === String(id))
+    if (idx !== -1) PAST_EXAMS.splice(idx, 1)
+    return
+  }
   const { error } = await supabase.from('past_exams').delete().eq('id', id)
   if (error) throw error
 }
@@ -225,16 +287,15 @@ export async function deletePastExamFromSupabase(id) {
 // PROFILES / STUDENTS API
 // ----------------------------------------------------------------------
 export async function fetchStudentsFromSupabase() {
-  if (!isSupabaseConfigured()) return []
+  if (!isSupabaseConfigured()) return SAMPLE_STUDENTS
   try {
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
       .order('created_at', { ascending: false })
 
-    if (error) {
-      console.error('Error fetching students:', error)
-      return []
+    if (error || !data || data.length === 0) {
+      return SAMPLE_STUDENTS
     }
 
     return (data || []).map((s) => ({
@@ -243,14 +304,15 @@ export async function fetchStudentsFromSupabase() {
       phone: s.phone,
       parentPhone: s.parent_phone,
       yearId: s.year_id,
+      groupName: s.group_name || '',
+      groupId: s.group_id || null,
       governorate: s.governorate,
       isActive: s.is_active !== false,
       role: s.role || 'student',
       joinedAt: s.created_at ? s.created_at.split('T')[0] : '',
     }))
   } catch (err) {
-    console.error('Unexpected error fetching students:', err)
-    return []
+    return SAMPLE_STUDENTS
   }
 }
 
@@ -260,6 +322,7 @@ export async function registerStudentInSupabase(studentData) {
     phone: studentData.phone,
     parent_phone: studentData.parentPhone,
     year_id: String(studentData.yearId),
+    group_name: studentData.groupName || null,
     governorate: studentData.governorate,
     is_active: true,
     role: 'student',
@@ -276,6 +339,7 @@ export async function updateStudentInSupabase(id, studentData) {
     phone: studentData.phone,
     parent_phone: studentData.parentPhone,
     year_id: String(studentData.yearId),
+    group_name: studentData.groupName || null,
     governorate: studentData.governorate,
   }
 
@@ -298,29 +362,26 @@ export async function toggleStudentActiveInSupabase(id, currentStatus) {
   if (error) throw error
 }
 
-// SQL Schema Export — the canonical script lives in schema.sql at the repo
-// root (tables + RLS + triggers + analytics view). This short version is just
-// what the dashboard modal shows; run the full file in the Supabase SQL editor.
 export const SUPABASE_SQL_SCHEMA = `
 -- Run the COMPLETE script from schema.sql in your repo.
 -- It creates every table below plus RLS policies, guard triggers,
--- the submissions storage bucket and the student_analytics view.
+-- storage buckets and the student_analytics view.
 
--- profiles      : students + admins (role, is_active)
--- lessons       : existing video lessons
--- past_exams    : governorate exam papers
--- videos        : YouTube library managed from the dashboard
--- quizzes       : quiz definitions (max_score, date, grade)
--- grades        : one score per student per quiz
--- assignments   : homework tasks (due_date, max_score)
--- submissions   : student answers + teacher score/feedback
--- attendance    : present / absent / late / excused per session
+-- 1. profiles              : students + admins (role, group_name, group_id, is_active)
+-- 2. groups                : group names & centers (id, name, year_id, description)
+-- 3. lessons               : lessons + model_answers (jsonb) + homework_questions (jsonb)
+-- 4. homework_submissions  : student homework answers, score, total_questions, submitted_at
+-- 5. past_exams            : governorate exam papers
+-- 6. videos                : YouTube library managed from dashboard
+-- 7. quizzes + grades      : quiz definitions & student marks
+-- 8. assignments           : general homework tasks & submissions
+-- 9. attendance            : present / absent / late / excused log
+-- 10. whatsapp_logs        : bulk WhatsApp delivery logs & statuses
 
--- Bulk WhatsApp messaging uses one extra RPC (latest quiz score, homework
--- grade and attendance per student). Run bulk-messaging.sql from the repo
--- in the same SQL Editor.
+-- Bulk WhatsApp messaging RPC:
+-- Run bulk-messaging.sql from repo in SQL Editor.
 
--- Then promote yourself to teacher:
+-- Promote yourself to teacher:
 UPDATE public.profiles SET role = 'admin'
 WHERE id = (SELECT id FROM auth.users WHERE email = 'YOUR_EMAIL_HERE');
 `

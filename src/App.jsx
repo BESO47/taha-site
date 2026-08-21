@@ -19,6 +19,7 @@ import LessonDetailPage from './pages/LessonDetailPage.jsx'
 import PastExamsPage from './pages/PastExamsPage.jsx'
 import AdminDashboardPage from './pages/AdminDashboardPage.jsx'
 import StudentProfilePage from './pages/StudentProfilePage.jsx'
+import HomeworkPage from './pages/HomeworkPage.jsx'
 import VideosPage from './pages/VideosPage.jsx'
 
 // Helper component to scroll to top on route change
@@ -61,10 +62,18 @@ function AnimatedRoutes() {
             }
           />
           <Route
+            path="/homework"
+            element={
+              <ProtectedStudentRoute>
+                <HomeworkPage />
+              </ProtectedStudentRoute>
+            }
+          />
+          <Route
             path="/videos"
             element={
               <ProtectedStudentRoute>
-                <VideosPage />
+                <HomeworkPage />
               </ProtectedStudentRoute>
             }
           />

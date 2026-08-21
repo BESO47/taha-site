@@ -2,14 +2,14 @@ import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import {
   User, Award, CalendarCheck, ClipboardList, Loader2, TrendingUp,
-  CheckCircle2, XCircle, Clock, FileText, Save, Pencil,
+  CheckCircle2, XCircle, Clock, FileText, Save, Pencil, Layers, Users
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useLanguage } from '../lib/i18n.jsx'
 import { YEARS, GOVERNORATES } from '../data/dummyData'
 import {
   fetchStudentAnalytics, fetchGradesForStudent, fetchAttendanceForStudent,
-  fetchAssignments, fetchSubmissionsForStudent, updateOwnProfile,
+  fetchAssignments, fetchSubmissionsForStudent, updateOwnProfile, fetchGroups
 } from '../lib/api'
 import AssignmentSubmitCard from '../components/AssignmentSubmitCard.jsx'
 
@@ -83,6 +83,7 @@ export default function StudentProfilePage() {
         fullName: profile.full_name || '',
         phone: profile.phone || '',
         parentPhone: profile.parent_phone || '',
+        groupName: profile.group_name || '',
         governorate: profile.governorate || GOVERNORATES[0],
         yearId: profile.year_id || '5',
       })
@@ -139,11 +140,17 @@ export default function StudentProfilePage() {
           <div className="text-center sm:text-start">
             <h1 className="text-2xl sm:text-3xl font-extrabold font-outfit">{profile?.full_name}</h1>
             <p className="text-sm text-slate-300 mt-1">{t('profileSubtitle')}</p>
-            <span className="inline-block mt-2 px-3 py-1 rounded-full bg-yellow-400/20 text-yellow-300 border border-yellow-400/40 text-xs font-bold">
-              {lang === 'ar'
-                ? YEARS.find((y) => y.id === profile?.year_id)?.titleAr
-                : YEARS.find((y) => y.id === profile?.year_id)?.title}
-            </span>
+            <div className="flex items-center gap-2 flex-wrap justify-center sm:justify-start mt-2">
+              <span className="px-3 py-1 rounded-full bg-yellow-400/20 text-yellow-300 border border-yellow-400/40 text-xs font-bold">
+                {lang === 'ar'
+                  ? YEARS.find((y) => y.id === profile?.year_id)?.titleAr
+                  : YEARS.find((y) => y.id === profile?.year_id)?.title}
+              </span>
+              <span className="px-3 py-1 rounded-full bg-purple-500/20 text-purple-300 border border-purple-400/40 text-xs font-bold flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5" />
+                <span>{profile?.group_name || t('noGroupAssigned')}</span>
+              </span>
+            </div>
           </div>
         </div>
 
@@ -190,6 +197,16 @@ export default function StudentProfilePage() {
               type="tel" dir="ltr" value={form.parentPhone}
               onChange={(e) => setForm({ ...form, parentPhone: e.target.value })}
               className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-bold mb-1.5">{t('studentGroup')}</label>
+            <input
+              type="text"
+              readOnly
+              value={form.groupName || t('noGroupAssigned')}
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-sm text-slate-500 cursor-not-allowed"
+              title={lang === 'ar' ? 'يتم تعيين المجموعة من قِبل المدرس' : 'Group is assigned by the teacher'}
             />
           </div>
           <div>
@@ -255,13 +272,32 @@ export default function StudentProfilePage() {
 
       {/* OVERVIEW */}
       {tab === 'overview' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          <StatCard icon={CalendarCheck} label={t('attendanceRate')} value={analytics?.attendance_percent ?? 0} suffix="%" accent="text-emerald-500" />
-          <StatCard icon={Award} label={t('quizAverage')} value={analytics?.avg_quiz_percent ?? 0} suffix="%" accent="text-yellow-500" />
-          <StatCard icon={ClipboardList} label={t('assignmentAverage')} value={analytics?.avg_assignment_percent ?? 0} suffix="%" accent="text-purple-500" />
-          <StatCard icon={CheckCircle2} label={t('sessionsAttended')} value={`${analytics?.present_count ?? 0}/${analytics?.total_sessions ?? 0}`} accent="text-sky-500" />
-          <StatCard icon={Award} label={t('quizzesTaken')} value={analytics?.quiz_count ?? 0} accent="text-amber-500" />
-          <StatCard icon={ClipboardList} label={t('submissionsMade')} value={analytics?.submission_count ?? 0} accent="text-indigo-500" />
+        <div className="space-y-6">
+          <div className="p-6 rounded-3xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+                <Layers className="w-6 h-6" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-slate-500 block">{t('studentGroup')}</span>
+                <span className="text-lg font-extrabold text-slate-900 dark:text-white font-outfit">
+                  {profile?.group_name || t('noGroupAssigned')}
+                </span>
+              </div>
+            </div>
+            <span className="text-xs px-3 py-1 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-500 font-bold">
+              {lang === 'ar' ? 'محدد بواسطة المدرس' : 'Assigned by teacher'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            <StatCard icon={CalendarCheck} label={t('attendanceRate')} value={analytics?.attendance_percent ?? 0} suffix="%" accent="text-emerald-500" />
+            <StatCard icon={Award} label={t('quizAverage')} value={analytics?.avg_quiz_percent ?? 0} suffix="%" accent="text-yellow-500" />
+            <StatCard icon={ClipboardList} label={t('assignmentAverage')} value={analytics?.avg_assignment_percent ?? 0} suffix="%" accent="text-purple-500" />
+            <StatCard icon={CheckCircle2} label={t('sessionsAttended')} value={`${analytics?.present_count ?? 0}/${analytics?.total_sessions ?? 0}`} accent="text-sky-500" />
+            <StatCard icon={Award} label={t('quizzesTaken')} value={analytics?.quiz_count ?? 0} accent="text-amber-500" />
+            <StatCard icon={ClipboardList} label={t('submissionsMade')} value={analytics?.submission_count ?? 0} accent="text-indigo-500" />
+          </div>
         </div>
       )}
 

@@ -1,29 +1,21 @@
 /**
- * Bulk WhatsApp messaging helpers.
+ * Bulk WhatsApp messaging helpers for Physics Hub.
  *
- * These are the building blocks behind the BulkMessagingTab component:
- *   - TEMPLATE_VARIABLES  : the {{...}} tags the editor can insert
- *   - buildVariableValues : turn one student record (from the
- *     `bulk_messaging_report` RPC, or its client-side fallback) into a
- *     map of variable -> human readable string
- *   - compileTemplate     : replace {{tags}} in the user's message
- *   - buildWhatsAppUrl    : wa.me/<phone>?text=<urlencoded_message>
- *   - buildBulkMessages   : compile the template for every selected
- *     student and produce { phone, message, url } entries ready to send
- *
- * A record has this shape (see bulk-messaging.sql / fetchBulkMessagingReport):
- * {
- *   student_id, full_name, phone, parent_phone, year_id, is_active,
- *   total_sessions, present_count, absent_count, late_count, attendance_percent,
- *   last_session_date, last_session_attendance,
- *   last_quiz_title, last_quiz_date, last_quiz_score, last_quiz_max,
- *   last_homework_title, last_homework_status, last_homework_score, last_homework_max
- * }
+ * Variables supported in templates:
+ *   - {{student_name}}            : Student Full Name
+ *   - {{group_name}}              : Assigned Group Name
+ *   - {{last_session_attendance}} : Last Session Attendance Status
+ *   - {{overall_attendance}}      : Overall Attendance (e.g. 85% (12/14))
+ *   - {{last_quiz_score}}         : Latest Quiz Score (e.g. 18/20)
+ *   - {{last_homework_grade}}     : Latest Homework Submission Grade (e.g. 9/10)
  */
+
+import { normalizePhone, formatPhoneWithPlus, validatePhone } from './whatsapp'
 
 /** The variable tags the template editor exposes. */
 export const TEMPLATE_VARIABLES = [
   { key: 'student_name', labelEn: 'Student Name', labelAr: 'اسم الطالب' },
+  { key: 'group_name', labelEn: 'Student Group', labelAr: 'اسم المجموعة' },
   { key: 'last_session_attendance', labelEn: 'Last Session Attendance', labelAr: 'حضور آخر حصة' },
   { key: 'overall_attendance', labelEn: 'Overall Attendance', labelAr: 'نسبة الحضور الكلية' },
   { key: 'last_quiz_score', labelEn: 'Latest Quiz Score', labelAr: 'درجة آخر اختبار' },
@@ -32,7 +24,7 @@ export const TEMPLATE_VARIABLES = [
 
 const STATUS_LABELS = {
   en: { present: 'Present', absent: 'Absent', late: 'Late', excused: 'Excused' },
-  ar: { present: 'حاضر', absent: 'غائب', late: 'متأخر', excused: 'بعذر' },
+  ar: { present: 'حاضر ✅', absent: 'غائب ❌', late: 'متأخر ⏳', excused: 'بعذر 📄' },
 }
 
 const HOMEWORK_LABELS = {
@@ -41,8 +33,8 @@ const HOMEWORK_LABELS = {
     missing: 'Not submitted', none: '—',
   },
   ar: {
-    graded: 'تم التصحيح', submitted: 'تم التسليم', returned: 'مُعاد',
-    missing: 'لم يُسلَّم', none: '—',
+    graded: 'تم التصحيح ✅', submitted: 'تم التسليم 📝', returned: 'مُعاد ↩️',
+    missing: 'لم يُسلَّم ⚠️', none: '—',
   },
 }
 
@@ -85,13 +77,13 @@ export function buildVariableValues(record = {}, { lang = 'ar', attendance = 'bo
   // ---- latest quiz: "18/20" ----
   let last_quiz_score = '—'
   if (record.last_quiz_score != null && record.last_quiz_max != null) {
-    last_quiz_score = `${fmt(record.last_quiz_score)}/${fmt(record.last_quiz_max)}`
+    last_quiz_score = `${fmt(record.last_quiz_score)} / ${fmt(record.last_quiz_max)}`
   }
 
   // ---- latest homework: "9/10" | "Completed" | "Not submitted" ----
   let last_homework_grade
   if (record.last_homework_score != null && record.last_homework_max != null) {
-    last_homework_grade = `${fmt(record.last_homework_score)}/${fmt(record.last_homework_max)}`
+    last_homework_grade = `${fmt(record.last_homework_score)} / ${fmt(record.last_homework_max)}`
   } else if (record.last_homework_status) {
     last_homework_grade = hwLabels[record.last_homework_status] || record.last_homework_status
   } else {
@@ -100,6 +92,7 @@ export function buildVariableValues(record = {}, { lang = 'ar', attendance = 'bo
 
   return {
     student_name: record.full_name || '',
+    group_name: record.group_name || (lang === 'ar' ? 'عام' : 'General'),
     last_session_attendance,
     overall_attendance,
     last_quiz_score,
@@ -116,39 +109,41 @@ export function compileTemplate(template, values) {
 
 /**
  * https://wa.me/<phone>?text=<urlencoded_message>
- * Phone is normalised with the existing helper (Egypt default +20).
+ * Phone is normalised with the standard helper (+20 default).
  */
 export function buildWhatsAppUrl(phone, message) {
-  // local import avoids a circular dependency on lib/whatsapp.js
-  // eslint-disable-next-line global-require
-  const to = normalizePhoneLocal(phone)
+  const to = normalizePhone(phone)
   if (!to) return null
   return `https://wa.me/${to}?text=${encodeURIComponent(message)}`
 }
 
-/** Keep this self-contained so messaging.js has no import cycle. */
-function normalizePhoneLocal(raw, countryCode = '20') {
-  if (!raw) return ''
-  let digits = String(raw).replace(/\D/g, '')
-  if (digits.startsWith('00')) digits = digits.slice(2)
-  if (digits.startsWith(countryCode)) return digits
-  if (digits.startsWith('0')) digits = digits.slice(1)
-  return `${countryCode}${digits}`
-}
-
 /**
  * Compile the template for every selected student.
- * @returns {Array<{ record, phone, message, url }>}  (rows without a phone are skipped)
+ * @returns {Array<{ record, phone, formattedPhone, isValid, error, message, url }>}
  */
-export function buildBulkMessages(records, template, { lang = 'ar', attendance = 'both' } = {}) {
+export function buildBulkMessages(records, template, { lang = 'ar', attendance = 'both', recipientType = 'student' } = {}) {
   const out = []
   for (const record of records) {
-    const phone = String(record.phone || '').trim()
-    if (!phone) continue
-    const message = compileTemplate(template, buildVariableValues(record, { lang, attendance }))
-    const url = buildWhatsAppUrl(phone, message)
-    if (!url) continue
-    out.push({ record, phone, message, url })
+    const rawPhone = String(record.phone || '').trim()
+    if (!rawPhone) continue
+
+    const val = validatePhone(rawPhone)
+    const values = buildVariableValues(record, { lang, attendance })
+    const message = compileTemplate(template, values)
+    const url = val.isValid ? buildWhatsAppUrl(val.normalized, message) : null
+
+    out.push({
+      record,
+      studentName: record.full_name || 'Student',
+      studentId: record.student_id || record.id,
+      phone: val.normalized || rawPhone,
+      formattedPhone: val.formatted || rawPhone,
+      isValid: val.isValid,
+      error: val.error,
+      target: recipientType,
+      message,
+      url,
+    })
   }
   return out
 }

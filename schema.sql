@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   phone         TEXT UNIQUE,
   parent_phone  TEXT,
   year_id       TEXT NOT NULL DEFAULT '5',
+  group_name    TEXT,
+  group_id      UUID,
   governorate   TEXT,
   is_active     BOOLEAN NOT NULL DEFAULT true,
   role          TEXT NOT NULL DEFAULT 'student',
@@ -29,6 +31,8 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 -- Bring older installs up to date (columns added after first release)
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS parent_phone TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS group_name TEXT;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS group_id UUID;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'student';
 
@@ -37,8 +41,9 @@ DO $$ BEGIN
     ADD CONSTRAINT profiles_role_check CHECK (role IN ('student', 'admin'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
-CREATE INDEX IF NOT EXISTS profiles_role_idx    ON public.profiles(role);
-CREATE INDEX IF NOT EXISTS profiles_year_id_idx ON public.profiles(year_id);
+CREATE INDEX IF NOT EXISTS profiles_role_idx       ON public.profiles(role);
+CREATE INDEX IF NOT EXISTS profiles_year_id_idx    ON public.profiles(year_id);
+CREATE INDEX IF NOT EXISTS profiles_group_name_idx ON public.profiles(group_name);
 
 -- ---------------------------------------------------------------------
 -- 2. HELPER FUNCTIONS
@@ -150,10 +155,33 @@ CREATE TABLE IF NOT EXISTS public.lessons (
   summary_pdf_url  TEXT,
   description      TEXT,
   quiz_json        JSONB DEFAULT '[]'::jsonb,
+  model_answers    JSONB DEFAULT '{}'::jsonb,
+  homework_questions JSONB DEFAULT '[]'::jsonb,
+  homework_pdf_name TEXT,
+  homework_pdf_url  TEXT,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Upgrade existing lessons table if already created
+ALTER TABLE public.lessons ADD COLUMN IF NOT EXISTS model_answers JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE public.lessons ADD COLUMN IF NOT EXISTS homework_questions JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.lessons ADD COLUMN IF NOT EXISTS homework_pdf_name TEXT;
+ALTER TABLE public.lessons ADD COLUMN IF NOT EXISTS homework_pdf_url TEXT;
+
 CREATE INDEX IF NOT EXISTS lessons_year_id_idx ON public.lessons(year_id);
+
+-- ---------------------------------------------------------------------
+-- 3b. GROUPS  (Student grouping & categorization)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.groups (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name        TEXT NOT NULL UNIQUE,
+  year_id     TEXT,
+  description TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS groups_year_id_idx ON public.groups(year_id);
 
 -- ---------------------------------------------------------------------
 -- 4. PAST EXAMS
@@ -289,6 +317,30 @@ CREATE TRIGGER submissions_touch_updated_at
   FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();
 
 -- ---------------------------------------------------------------------
+-- 7b. HOMEWORK SUBMISSIONS  (Lesson homework submissions & video gating)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.homework_submissions (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id      UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  lesson_id       UUID NOT NULL REFERENCES public.lessons(id)  ON DELETE CASCADE,
+  answers         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  score           NUMERIC(6,2) NOT NULL DEFAULT 0,
+  total_questions INT NOT NULL DEFAULT 0,
+  submitted_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (lesson_id, student_id)        -- one homework submission per student per lesson
+);
+
+CREATE INDEX IF NOT EXISTS homework_submissions_student_id_idx ON public.homework_submissions(student_id);
+CREATE INDEX IF NOT EXISTS homework_submissions_lesson_id_idx  ON public.homework_submissions(lesson_id);
+
+DROP TRIGGER IF EXISTS homework_submissions_touch_updated_at ON public.homework_submissions;
+CREATE TRIGGER homework_submissions_touch_updated_at
+  BEFORE UPDATE ON public.homework_submissions
+  FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();
+
+-- ---------------------------------------------------------------------
 -- 8. ATTENDANCE
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.attendance (
@@ -307,6 +359,27 @@ CREATE TABLE IF NOT EXISTS public.attendance (
 CREATE INDEX IF NOT EXISTS attendance_student_id_idx ON public.attendance(student_id);
 CREATE INDEX IF NOT EXISTS attendance_date_idx       ON public.attendance(session_date);
 
+-- ---------------------------------------------------------------------
+-- 8b. WHATSAPP LOGS  (Audit log for outgoing bulk WhatsApp messages)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.whatsapp_logs (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id     UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  phone          TEXT NOT NULL,
+  recipient_name TEXT,
+  recipient_type TEXT NOT NULL DEFAULT 'student'
+                 CHECK (recipient_type IN ('student', 'parent')),
+  message_body   TEXT NOT NULL,
+  status         TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'pending')),
+  error_message  TEXT,
+  sent_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS whatsapp_logs_sent_at_idx    ON public.whatsapp_logs(sent_at DESC);
+CREATE INDEX IF NOT EXISTS whatsapp_logs_student_id_idx ON public.whatsapp_logs(student_id);
+CREATE INDEX IF NOT EXISTS whatsapp_logs_status_idx     ON public.whatsapp_logs(status);
+
 -- =====================================================================
 -- 9. ROW LEVEL SECURITY
 -- ---------------------------------------------------------------------
@@ -316,15 +389,18 @@ CREATE INDEX IF NOT EXISTS attendance_date_idx       ON public.attendance(sessio
 --   * admins    -> full access everywhere via public.is_admin()
 -- =====================================================================
 
-ALTER TABLE public.profiles    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.lessons     ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.past_exams  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.videos      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.quizzes     ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.grades      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.assignments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.submissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.attendance  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.lessons              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.groups               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.past_exams           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.videos               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.quizzes              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.grades               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.assignments          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.submissions          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.homework_submissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.attendance           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.whatsapp_logs        ENABLE ROW LEVEL SECURITY;
 
 -- ------------------------- PROFILES ----------------------------------
 DROP POLICY IF EXISTS "profiles: read own"          ON public.profiles;
@@ -498,6 +574,63 @@ CREATE POLICY "attendance: admin read" ON public.attendance
   USING (public.is_admin());
 
 CREATE POLICY "attendance: admin write" ON public.attendance
+  FOR ALL TO authenticated
+  USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+-- -------------------------- GROUPS -----------------------------------
+DROP POLICY IF EXISTS "groups: read"        ON public.groups;
+DROP POLICY IF EXISTS "groups: admin write" ON public.groups;
+
+CREATE POLICY "groups: read" ON public.groups
+  FOR SELECT TO authenticated, anon
+  USING (true);
+
+CREATE POLICY "groups: admin write" ON public.groups
+  FOR ALL TO authenticated
+  USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+-- ------------------- HOMEWORK SUBMISSIONS ----------------------------
+DROP POLICY IF EXISTS "homework_submissions: read own"       ON public.homework_submissions;
+DROP POLICY IF EXISTS "homework_submissions: admin read all" ON public.homework_submissions;
+DROP POLICY IF EXISTS "homework_submissions: insert own"     ON public.homework_submissions;
+DROP POLICY IF EXISTS "homework_submissions: update own"     ON public.homework_submissions;
+DROP POLICY IF EXISTS "homework_submissions: admin all"      ON public.homework_submissions;
+
+CREATE POLICY "homework_submissions: read own" ON public.homework_submissions
+  FOR SELECT TO authenticated
+  USING (student_id = auth.uid());
+
+CREATE POLICY "homework_submissions: admin read all" ON public.homework_submissions
+  FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+CREATE POLICY "homework_submissions: insert own" ON public.homework_submissions
+  FOR INSERT TO authenticated
+  WITH CHECK (student_id = auth.uid() AND public.is_active_student());
+
+CREATE POLICY "homework_submissions: update own" ON public.homework_submissions
+  FOR UPDATE TO authenticated
+  USING (student_id = auth.uid())
+  WITH CHECK (student_id = auth.uid());
+
+CREATE POLICY "homework_submissions: admin all" ON public.homework_submissions
+  FOR ALL TO authenticated
+  USING (public.is_admin()) WITH CHECK (public.is_admin());
+
+-- ----------------------- WHATSAPP LOGS -------------------------------
+DROP POLICY IF EXISTS "whatsapp_logs: admin read"         ON public.whatsapp_logs;
+DROP POLICY IF EXISTS "whatsapp_logs: insert authed"      ON public.whatsapp_logs;
+DROP POLICY IF EXISTS "whatsapp_logs: admin all"          ON public.whatsapp_logs;
+
+CREATE POLICY "whatsapp_logs: admin read" ON public.whatsapp_logs
+  FOR SELECT TO authenticated
+  USING (public.is_admin());
+
+CREATE POLICY "whatsapp_logs: insert authed" ON public.whatsapp_logs
+  FOR INSERT TO authenticated
+  WITH CHECK (true);
+
+CREATE POLICY "whatsapp_logs: admin all" ON public.whatsapp_logs
   FOR ALL TO authenticated
   USING (public.is_admin()) WITH CHECK (public.is_admin());
 

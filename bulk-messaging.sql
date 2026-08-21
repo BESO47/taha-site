@@ -41,6 +41,7 @@ RETURNS TABLE (
   phone                   TEXT,
   parent_phone            TEXT,
   year_id                 TEXT,
+  group_name              TEXT,
   is_active               BOOLEAN,
 
   -- Overall attendance
@@ -76,6 +77,7 @@ AS $$
     p.phone,
     p.parent_phone,
     p.year_id,
+    p.group_name,
     p.is_active,
 
     -- ---------------- overall attendance ----------------
