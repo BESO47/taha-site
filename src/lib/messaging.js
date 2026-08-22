@@ -15,6 +15,8 @@ import { normalizePhone, formatPhoneWithPlus, validatePhone } from './whatsapp'
 /** The variable tags the template editor exposes. */
 export const TEMPLATE_VARIABLES = [
   { key: 'student_name', labelEn: 'Student Name', labelAr: 'اسم الطالب' },
+  { key: 'parent_name', labelEn: 'Parent Name', labelAr: 'اسم ولي الأمر' },
+  { key: 'course_name', labelEn: 'Course / Group', labelAr: 'المادة / المجموعة' },
   { key: 'group_name', labelEn: 'Student Group', labelAr: 'اسم المجموعة' },
   { key: 'last_session_attendance', labelEn: 'Last Session Attendance', labelAr: 'حضور آخر حصة' },
   { key: 'overall_attendance', labelEn: 'Overall Attendance', labelAr: 'نسبة الحضور الكلية' },
@@ -90,9 +92,12 @@ export function buildVariableValues(record = {}, { lang = 'ar', attendance = 'bo
     last_homework_grade = hwLabels.none
   }
 
+  const group = record.group_name || (lang === 'ar' ? 'عام' : 'General')
   return {
     student_name: record.full_name || '',
-    group_name: record.group_name || (lang === 'ar' ? 'عام' : 'General'),
+    parent_name: record.parent_name || record.guardian_name || '',
+    course_name: record.course_name || record.year_name || group,
+    group_name: group,
     last_session_attendance,
     overall_attendance,
     last_quiz_score,
@@ -100,23 +105,19 @@ export function buildVariableValues(record = {}, { lang = 'ar', attendance = 'bo
   }
 }
 
-/** Replace every {{variable}} tag in a template string. Unknown tags stay as-is. */
+/** Replace {{variable}} and {variable} tags. Unknown tags stay as-is. */
 export function compileTemplate(template, values) {
-  return String(template || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
-    return values[key] != null && values[key] !== '' ? String(values[key]) : match
-  })
+  const replace = (match, key) => (
+    values[key] != null && values[key] !== '' ? String(values[key]) : match
+  )
+  return String(template || '')
+    .replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, replace)
+    .replace(/\{([a-zA-Z0-9_]+)\}/g, replace)
 }
 
-/**
- * https://web.whatsapp.com/send?phone=<phone>&text=<urlencoded_message>
- * Phone is normalised with the standard helper (+20 default). WhatsApp Web
- * is used for the sequential bulk-send queue so every recipient chat opens
- * directly in the browser.
- */
+/** Device-aware WhatsApp URL (encodeURIComponent on the message). */
 export function buildWhatsAppUrl(phone, message) {
-  const to = normalizePhone(phone)
-  if (!to) return null
-  return `https://web.whatsapp.com/send?phone=${to}&text=${encodeURIComponent(message)}`
+  return buildChatUrl(phone, message)
 }
 
 /**
