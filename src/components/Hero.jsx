@@ -47,7 +47,7 @@ export default function Hero() {
             </div>
 
             {/* CTAs */}
-            <div className={`pt-4 flex flex-col sm:flex-row items-center justify-center ${lang === 'ar' ? 'md:justify-start' : 'md:justify-start'} gap-4 font-ibm`}>
+            <div className={`pt-4 flex flex-col sm:flex-row items-center justify-center ${lang === 'ar' ? 'md:justify-end' : 'md:justify-start'} gap-4 font-ibm`}>
               <Link
                 to="/register"
                 className="w-full sm:w-auto px-8 py-4 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-base shadow-xl shadow-yellow-400/25 hover:scale-105 transition flex items-center justify-center gap-2"
@@ -93,7 +93,7 @@ export default function Hero() {
               <motion.div
                 animate={{ y: [0, -10, 0] }}
                 transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
-                className="absolute -top-4 ltr:-right-4 rtl:-left-4 bg-white dark:bg-zinc-900/95 backdrop-blur-md p-3 sm:p-4 rounded-2xl shadow-xl border border-slate-200 dark:border-yellow-400/40 flex items-center gap-3 font-ibm text-slate-900 dark:text-white"
+                className="absolute -top-2 left-1/2 -translate-x-1/2 sm:translate-x-0 ltr:sm:-right-4 ltr:sm:left-auto rtl:sm:-left-4 rtl:sm:right-auto bg-white dark:bg-zinc-900/95 backdrop-blur-md p-3 sm:p-4 rounded-2xl shadow-xl border border-slate-200 dark:border-yellow-400/40 flex items-center gap-3 font-ibm text-slate-900 dark:text-white whitespace-nowrap"
               >
                 <div className="w-10 h-10 rounded-xl bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 flex items-center justify-center border border-yellow-400/40">
                   <Atom className="w-6 h-6 animate-spin-slow" />
@@ -108,7 +108,7 @@ export default function Hero() {
               <motion.div
                 animate={{ y: [0, 10, 0] }}
                 transition={{ duration: 5, repeat: Infinity, ease: 'easeInOut', delay: 1 }}
-                className="absolute -bottom-4 ltr:-left-4 rtl:-right-4 bg-white dark:bg-zinc-900/95 backdrop-blur-md p-3 sm:p-4 rounded-2xl shadow-xl border border-slate-200 dark:border-yellow-400/40 flex items-center gap-3 font-ibm text-slate-900 dark:text-white"
+                className="absolute -bottom-2 left-1/2 -translate-x-1/2 sm:translate-x-0 ltr:sm:-left-4 ltr:sm:left-auto rtl:sm:-right-4 rtl:sm:right-auto bg-white dark:bg-zinc-900/95 backdrop-blur-md p-3 sm:p-4 rounded-2xl shadow-xl border border-slate-200 dark:border-yellow-400/40 flex items-center gap-3 font-ibm text-slate-900 dark:text-white whitespace-nowrap"
               >
                 <div className="w-10 h-10 rounded-xl bg-yellow-400 text-black flex items-center justify-center font-bold">
                   <Zap className="w-6 h-6 fill-current" />

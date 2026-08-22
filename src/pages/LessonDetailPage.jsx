@@ -306,20 +306,20 @@ export default function LessonDetailPage() {
           </h3>
         </div>
 
-        <form onSubmit={handleAddComment} className="flex gap-3">
+        <form onSubmit={handleAddComment} className="flex flex-col sm:flex-row gap-3">
           <input
             type="text"
             placeholder={t('commentPlaceholder')}
             value={newComment}
             onChange={(e) => setNewComment(e.target.value)}
-            className="flex-1 px-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-yellow-400"
+            className="flex-1 min-w-0 px-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-yellow-400"
           />
           <button
             type="submit"
-            className="px-6 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-bold text-sm flex items-center gap-2 shrink-0 transition"
+            className="w-full sm:w-auto px-6 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-bold text-sm flex items-center justify-center gap-2 shrink-0 transition"
           >
-            <span>{t('sendComment')}</span>
-            <Send className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('sendComment')}</span>
+            <Send className="w-4 h-4 sm:ms-0" />
           </button>
         </form>
 

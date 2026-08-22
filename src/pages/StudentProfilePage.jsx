@@ -232,17 +232,17 @@ export default function StudentProfilePage() {
               {GOVERNORATES.map((g) => <option key={g} value={g}>{g}</option>)}
             </select>
           </div>
-          <div className="sm:col-span-2 flex gap-3">
+          <div className="sm:col-span-2 flex flex-col sm:flex-row gap-3">
             <button
               type="submit" disabled={savingProfile}
-              className="px-6 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-bold text-sm flex items-center gap-2"
+              className="px-6 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-bold text-sm flex items-center justify-center gap-2"
             >
               {savingProfile ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               <span>{t('saveChanges')}</span>
             </button>
             <button
               type="button" onClick={() => setEditing(false)}
-              className="px-6 py-3 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm"
+              className="px-6 py-3 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm flex items-center justify-center"
             >
               {t('cancel')}
             </button>

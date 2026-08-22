@@ -288,7 +288,7 @@ export default function HomeworkSubmitCard({
           ) : !open ? (
             <button
               onClick={() => setOpen(true)}
-              className="px-5 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-bold text-sm flex items-center gap-2 transition"
+              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-bold text-sm flex items-center justify-center gap-2 transition"
             >
               <Send className="w-4 h-4" />
               <span>{hasSubmitted ? t('resubmit') : t('submitAssignment')}</span>
@@ -307,8 +307,8 @@ export default function HomeworkSubmitCard({
               <div>
                 <label className="block text-xs font-bold mb-1.5">{t('attachFile')}</label>
                 <label className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-zinc-700 cursor-pointer hover:border-yellow-400 transition text-sm text-slate-600 dark:text-zinc-400">
-                  <Upload className="w-4 h-4" />
-                  <span>{file ? file.name : t('attachFile')}</span>
+                  <Upload className="w-4 h-4 shrink-0" />
+                  <span className="truncate">{file ? file.name : t('attachFile')}</span>
                   <input
                     type="file"
                     accept="application/pdf,image/jpeg,image/png,image/webp"
@@ -318,17 +318,17 @@ export default function HomeworkSubmitCard({
                 </label>
               </div>
 
-              <div className="flex gap-3">
+              <div className="flex flex-col-reverse sm:flex-row gap-3">
                 <button
                   type="submit" disabled={busy}
-                  className="px-6 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-bold text-sm flex items-center gap-2"
+                  className="px-6 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-bold text-sm flex items-center justify-center gap-2 transition"
                 >
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                   <span>{busy ? t('submitting') : t('submitAssignment')}</span>
                 </button>
                 <button
                   type="button" onClick={() => setOpen(false)}
-                  className="px-6 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm"
+                  className="px-6 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm flex items-center justify-center"
                 >
                   {t('cancel')}
                 </button>

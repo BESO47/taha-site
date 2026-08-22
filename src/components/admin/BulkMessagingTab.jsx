@@ -642,10 +642,10 @@ export default function BulkMessagingTab() {
             <button
               onClick={handleStartDispatch}
               disabled={isDispatching || !chosenRecords.length}
-              className="flex-1 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 transition"
+              className="flex-1 min-h-[48px] py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 transition active:scale-[0.99]"
             >
               {isDispatching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              <span>
+              <span className="truncate">
                 {t('sendBulk')} {chosenRecords.length > 0 ? `(${chosenRecords.length})` : ''}
               </span>
             </button>
@@ -653,7 +653,8 @@ export default function BulkMessagingTab() {
               onClick={handleReviewMessages}
               disabled={isDispatching || !chosenRecords.length}
               title={t('reviewMessages')}
-              className="px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold hover:text-yellow-500 transition disabled:opacity-50"
+              aria-label={t('reviewMessages')}
+              className="min-w-[48px] min-h-[48px] px-3 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold hover:text-yellow-500 transition disabled:opacity-50 flex items-center justify-center"
             >
               <ExternalLink className="w-4 h-4" />
             </button>

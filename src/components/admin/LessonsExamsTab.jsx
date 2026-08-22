@@ -105,11 +105,11 @@ export default function LessonsExamsTab() {
 
   return (
     <div className="space-y-6">
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <button
           onClick={() => setSub('lessons')}
-          className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 ${
-            sub === 'lessons' ? 'bg-yellow-400 text-black' : 'bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-400'
+          className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition ${
+            sub === 'lessons' ? 'bg-yellow-400 text-black shadow-md' : 'bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-800'
           }`}
         >
           <BookOpen className="w-4 h-4" />
@@ -117,8 +117,8 @@ export default function LessonsExamsTab() {
         </button>
         <button
           onClick={() => setSub('exams')}
-          className={`px-5 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 ${
-            sub === 'exams' ? 'bg-yellow-400 text-black' : 'bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-400'
+          className={`flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition ${
+            sub === 'exams' ? 'bg-amber-500 text-white shadow-md' : 'bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-800'
           }`}
         >
           <FileText className="w-4 h-4" />
@@ -169,7 +169,7 @@ export default function LessonsExamsTab() {
               />
             </div>
             <div className="sm:col-span-2">
-              <button type="submit" disabled={busy} className="px-6 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-bold text-sm flex items-center gap-2">
+              <button type="submit" disabled={busy} className="w-full sm:w-auto px-6 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 active:scale-[0.99] disabled:opacity-60 text-black font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-yellow-400/20 transition">
                 {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                 <span>{t('save')}</span>
               </button>
@@ -234,7 +234,7 @@ export default function LessonsExamsTab() {
               <input type="url" dir="ltr" value={newExam.videoSolutionUrl} onChange={(e) => setNewExam({ ...newExam, videoSolutionUrl: e.target.value })} className={`${inputCls} font-mono`} />
             </div>
             <div className="sm:col-span-2">
-              <button type="submit" disabled={busy} className="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white font-bold text-sm flex items-center gap-2">
+              <button type="submit" disabled={busy} className="w-full sm:w-auto px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-600 active:scale-[0.99] disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-amber-500/20 transition">
                 {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                 <span>{t('save')}</span>
               </button>

@@ -73,7 +73,7 @@ export default function Footer() {
           </div>
 
           {/* Col 3: CTA */}
-          <div className={`space-y-4 text-center ${lang === 'ar' ? 'md:text-left flex flex-col items-center md:items-end' : 'md:text-right flex flex-col items-center md:items-end'}`}>
+          <div className={`space-y-4 text-center flex flex-col items-center md:items-end ${lang === 'ar' ? 'md:text-right' : 'md:text-right'}`}>
             <h3 className="font-extrabold text-lg text-white font-outfit">
               {t('ctaHeader')}
             </h3>
