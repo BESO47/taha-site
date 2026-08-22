@@ -16,8 +16,8 @@ import {
   createQueueController,
   fetchWhatsAppLogs,
   validatePhone,
-  normalizePhone,
-  formatPhoneWithPlus
+  formatPhoneWithPlus,
+  isMobileDevice,
 } from '../../lib/whatsapp'
 import {
   getGatewayStatus,
@@ -25,12 +25,12 @@ import {
   stopSession as stopGatewaySession,
 } from '../../lib/whatsappGateway'
 import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
+import BulkSendQueueModal from './BulkSendQueueModal.jsx'
 import {
   TEMPLATE_VARIABLES,
   buildVariableValues,
   buildBulkMessages,
 } from '../../lib/messaging'
-
 const DEFAULT_TEMPLATE_AR = [
   'مرحباً {{student_name}} 👋',
   '',
@@ -124,6 +124,9 @@ export default function BulkMessagingTab() {
   const [showLogsModal, setShowLogsModal] = useState(false)
   const [logsList, setLogsList] = useState([])
   const [loadingLogs, setLoadingLogs] = useState(false)
+
+  // Mobile / popup-safe sequential queue
+  const [mobileQueue, setMobileQueue] = useState(null)
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -1004,7 +1007,7 @@ export default function BulkMessagingTab() {
             </div>
 
             {/* Errors List if any */}
-            {dispatchSummary.errors.length > 0 && (
+            {dispatchSummary.errors?.length > 0 && (
               <div className="space-y-2">
                 <h4 className="text-xs font-bold text-red-600">{lang === 'ar' ? 'تفاصيل الرسائل غير المرسلة:' : 'Failed Messages Details:'}</h4>
                 <div className="space-y-1.5 max-h-40 overflow-y-auto">
@@ -1112,6 +1115,18 @@ export default function BulkMessagingTab() {
             )}
           </div>
         </div>
+      )}
+
+      {mobileQueue && (
+        <BulkSendQueueModal
+          messages={mobileQueue}
+          lang={lang}
+          onClose={() => setMobileQueue(null)}
+          onComplete={(summary) => {
+            setDispatchSummary(summary)
+            setMobileQueue(null)
+          }}
+        />
       )}
 
       {/* ---------- Manual wa.me Review Modal ---------- */}

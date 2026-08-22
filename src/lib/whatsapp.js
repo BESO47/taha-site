@@ -232,25 +232,49 @@ export function buildReportMessage({
   return L.join('\n')
 }
 
-/** Open WhatsApp with the message pre-filled. */
-export function openWhatsApp(phone, message) {
-  const to = normalizePhone(phone)
-  if (!to) throw new Error('Missing or invalid phone number')
-  const url = `https://wa.me/${to}?text=${encodeURIComponent(message)}`
-  window.open(url, '_blank', 'noopener,noreferrer')
-  return url
+/** Detect coarse device class for WhatsApp deep-link routing. */
+export function isMobileDevice() {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent || ''
+  const touch = typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)
+    || (touch && /Macintosh/i.test(ua))
 }
 
 /**
- * Build a web.whatsapp.com chat URL (desktop WhatsApp Web).
- * https://web.whatsapp.com/send?phone=<international>&text=<urlencoded>
- * Used by the sequential bulk-send queue so every recipient chat opens on
- * WhatsApp Web directly.
+ * Device-aware WhatsApp send URL.
+ * Mobile: api.whatsapp.com / whatsapp:// (native app)
+ * Desktop: web.whatsapp.com
+ * Phone is digits-only international (no +).
  */
-export function buildChatUrl(phone, message) {
+export function buildChatUrl(phone, message, { mobile } = {}) {
   const to = normalizePhone(phone)
   if (!to) return null
-  return `https://web.whatsapp.com/send?phone=${to}&text=${encodeURIComponent(message)}`
+  const text = encodeURIComponent(message ?? '')
+  const useMobile = mobile ?? isMobileDevice()
+  if (useMobile) {
+    return `https://api.whatsapp.com/send?phone=${to}&text=${text}`
+  }
+  return `https://web.whatsapp.com/send?phone=${to}&text=${text}`
+}
+
+/** Native-scheme fallback when the https deep link is blocked. */
+export function buildNativeWhatsAppUrl(phone, message) {
+  const to = normalizePhone(phone)
+  if (!to) return null
+  return `whatsapp://send?phone=${to}&text=${encodeURIComponent(message ?? '')}`
+}
+
+/** Open WhatsApp with the message pre-filled (one recipient). */
+export function openWhatsApp(phone, message) {
+  const to = normalizePhone(phone)
+  if (!to) throw new Error('Missing or invalid phone number')
+  const url = buildChatUrl(to, message)
+  const opened = window.open(url, '_blank', 'noopener,noreferrer')
+  if (!opened && isMobileDevice()) {
+    window.location.href = url
+  }
+  return url
 }
 
 /**
