@@ -191,17 +191,17 @@ export default function QuizzesTab({ students }) {
       {gradingQuiz && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 max-w-2xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
-              <h3 className="font-bold text-lg flex items-center gap-2">
-                <Award className="w-5 h-5 text-yellow-500" />
-                <span>{gradingQuiz.title}</span>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <h3 className="font-bold text-lg flex items-center gap-2 min-w-0">
+                <Award className="w-5 h-5 text-yellow-500 shrink-0" />
+                <span className="truncate">{gradingQuiz.title}</span>
               </h3>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 sm:gap-3 w-full sm:w-auto">
                 {/* Universal group filter (Feature 3) */}
-                <div className="w-52">
+                <div className="flex-1 sm:w-52 sm:flex-none">
                   <GroupFilterSelect value={groupId} onChange={setGroupId} groups={groups} compact />
                 </div>
-                <button onClick={() => setGradingQuiz(null)} className="text-slate-400 hover:text-slate-600">
+                <button onClick={() => setGradingQuiz(null)} aria-label="Close" className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-zinc-800 shrink-0">
                   <X className="w-5 h-5" />
                 </button>
               </div>

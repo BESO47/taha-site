@@ -334,81 +334,113 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
 
       {/* Group Management Modal */}
       {showManageGroups && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-zinc-800 pb-3">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-lg max-h-[90vh] sm:max-h-[85vh] overflow-y-auto shadow-2xl border border-slate-200 dark:border-zinc-800">
+            {/* Sticky modal header */}
+            <div className="sticky top-0 z-10 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md flex items-center justify-between border-b border-slate-200 dark:border-zinc-800 px-6 py-4">
               <h3 className="font-bold text-lg flex items-center gap-2">
                 <Tag className="w-5 h-5 text-yellow-500" />
                 <span>{t('manageGroups')}</span>
               </h3>
               <button
                 onClick={() => setShowManageGroups(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-white"
+                aria-label={lang === 'ar' ? 'إغلاق' : 'Close'}
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-zinc-800 transition"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Add New Group Form */}
-            <form onSubmit={handleAddGroup} className="space-y-3 bg-slate-50 dark:bg-black/50 p-4 rounded-2xl border border-slate-200 dark:border-zinc-800">
-              <label className="block text-xs font-bold">{t('addGroup')}</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  required
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  placeholder={t('groupNamePlaceholder')}
-                  className="flex-1 px-4 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs font-bold"
-                />
-                <select
-                  value={newGroupYear}
-                  onChange={(e) => setNewGroupYear(e.target.value)}
-                  className="px-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs font-bold"
-                >
-                  {YEARS.map((y) => (
-                    <option key={y.id} value={y.id}>
-                      {lang === 'ar' ? y.shortTitleAr : y.shortTitle}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <button
-                type="submit"
-                disabled={addingGroup}
-                className="w-full py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-extrabold text-xs flex items-center justify-center gap-1.5 shadow"
-              >
-                {addingGroup ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                <span>{t('saveGroup')}</span>
-              </button>
-            </form>
+            <div className="p-6 space-y-5">
+              {/* Add New Group Form */}
+              <form onSubmit={handleAddGroup} className="space-y-3 bg-gradient-to-br from-yellow-50 to-amber-50 dark:from-yellow-400/10 dark:to-amber-400/5 p-5 rounded-2xl border border-yellow-200 dark:border-yellow-400/20">
+                <div className="flex items-center gap-2">
+                  <span className="w-8 h-8 rounded-lg bg-yellow-400 text-black flex items-center justify-center shrink-0">
+                    <Plus className="w-4 h-4" />
+                  </span>
+                  <label className="block text-sm font-extrabold text-slate-800 dark:text-zinc-100">{t('addGroup')}</label>
+                </div>
 
-            {/* Existing Groups List */}
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-slate-500">{lang === 'ar' ? 'المجموعات الحالية' : 'Current Groups'}</label>
-              {groups.length === 0 ? (
-                <p className="text-xs text-slate-400 py-3 text-center">{lang === 'ar' ? 'لا توجد مجموعات مسجلة' : 'No groups created yet'}</p>
-              ) : (
-                groups.map((g) => (
-                  <div
-                    key={g.id}
-                    className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-black/40 border border-slate-100 dark:border-zinc-800"
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    required
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    placeholder={t('groupNamePlaceholder')}
+                    className="flex-1 min-w-0 px-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition"
+                  />
+                  <select
+                    value={newGroupYear}
+                    onChange={(e) => setNewGroupYear(e.target.value)}
+                    aria-label={t('gradeLabel')}
+                    className="sm:w-40 px-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition cursor-pointer"
                   >
-                    <div>
-                      <span className="font-bold text-xs">{g.name}</span>
-                      <span className="text-[10px] text-slate-400 ms-2">
-                        ({lang === 'ar' ? YEARS.find((y) => y.id === g.year_id)?.shortTitleAr : YEARS.find((y) => y.id === g.year_id)?.shortTitle || 'عام'})
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => handleDeleteGroup(g.id)}
-                      className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {YEARS.map((y) => (
+                      <option key={y.id} value={y.id}>
+                        {lang === 'ar' ? y.shortTitleAr : y.shortTitle}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={addingGroup}
+                  className="w-full py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 active:scale-[0.99] disabled:opacity-60 text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow-md shadow-yellow-400/20 transition"
+                >
+                  {addingGroup ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                  <span>{t('saveGroup')}</span>
+                </button>
+              </form>
+
+              {/* Existing Groups List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between px-1">
+                  <label className="block text-xs font-bold text-slate-500 dark:text-zinc-400">
+                    {lang === 'ar' ? 'المجموعات الحالية' : 'Current groups'}
+                  </label>
+                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-500 dark:text-zinc-400">
+                    {groups.length}
+                  </span>
+                </div>
+                {groups.length === 0 ? (
+                  <div className="text-center py-8 px-4 rounded-2xl border border-dashed border-slate-200 dark:border-zinc-800">
+                    <Tag className="w-8 h-8 text-slate-300 dark:text-zinc-600 mx-auto mb-2" />
+                    <p className="text-xs text-slate-400 dark:text-zinc-500 font-bold">
+                      {lang === 'ar' ? 'لا توجد مجموعات مسجلة بعد' : 'No groups created yet'}
+                    </p>
                   </div>
-                ))
-              )}
+                ) : (
+                  <ul className="space-y-2">
+                    {groups.map((g) => (
+                      <li
+                        key={g.id}
+                        className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-100 dark:border-zinc-700/50 hover:border-yellow-400/40 transition"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="w-9 h-9 rounded-lg bg-purple-100 dark:bg-purple-500/15 text-purple-600 dark:text-purple-300 flex items-center justify-center shrink-0">
+                            <Tag className="w-4 h-4" />
+                          </span>
+                          <div className="min-w-0">
+                            <span className="font-bold text-sm text-slate-800 dark:text-zinc-100 block truncate">{g.name}</span>
+                            <span className="text-[11px] text-slate-400 dark:text-zinc-500 font-bold">
+                              {lang === 'ar' ? YEARS.find((y) => y.id === g.year_id)?.shortTitleAr : YEARS.find((y) => y.id === g.year_id)?.shortTitle || (lang === 'ar' ? 'عام' : 'General')}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteGroup(g.id)}
+                          aria-label={lang === 'ar' ? 'حذف المجموعة' : 'Delete group'}
+                          className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-600 transition shrink-0"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           </div>
         </div>

@@ -90,9 +90,12 @@ export default function VideosTab() {
             <div className="sm:col-span-2 flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-black/50 border border-slate-200 dark:border-zinc-800">
               <img
                 src={`https://img.youtube.com/vi/${previewId}/mqdefault.jpg`}
-                alt="preview" className="w-28 rounded-lg"
+                alt="preview" className="w-24 sm:w-28 rounded-lg shrink-0"
               />
-              <span className="text-xs font-mono text-slate-500">{previewId}</span>
+              <div className="min-w-0">
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">Video ID</p>
+                <span className="text-xs font-mono text-slate-500 break-all">{previewId}</span>
+              </div>
             </div>
           )}
 
@@ -127,7 +130,7 @@ export default function VideosTab() {
           <div className="sm:col-span-2">
             <button
               type="submit" disabled={saving}
-              className="px-6 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-bold text-sm flex items-center gap-2"
+              className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 active:scale-[0.99] disabled:opacity-60 text-black font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-yellow-400/20 transition"
             >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
               <span>{t('addVideo')}</span>

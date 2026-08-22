@@ -6,6 +6,13 @@ html {
   scroll-behavior: smooth;
 }
 
+/* Defensive horizontal-overflow guard. Individual inner regions (admin
+   data tables, code blocks) opt back in to scrolling with overflow-x-auto. */
+html,
+body {
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   font-family: "IBM Plex Sans Arabic", sans-serif;
@@ -15,6 +22,17 @@ body {
 
 .smooth {
   transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+
+/* iOS Safari zooms the viewport when a focused form control renders below
+   16px. Force a 16px floor on touch viewports; visual sizing on larger
+   screens is still controlled by the component's own text-* classes. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
 }
 
 .flex-center-both {

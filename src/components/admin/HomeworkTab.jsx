@@ -778,7 +778,7 @@ export default function HomeworkTab() {
                             </button>
                           </div>
 
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 ltr:pl-9 rtl:pr-9">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9">
                             {q.options.map((opt, oi) => {
                               const letter = ['A', 'B', 'C', 'D'][oi]
                               return (
@@ -791,17 +791,18 @@ export default function HomeworkTab() {
                                       updateQuestion(idx, { options: opts })
                                     }}
                                     placeholder={`${letter}) ${lang === 'ar' ? 'اختيار' : 'Option'}`}
-                                    className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs"
+                                    className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
                                   />
                                   <button
                                     type="button"
                                     onClick={() => updateQuestion(idx, { answer: letter })}
-                                    className={`px-2 py-1.5 rounded-lg text-[11px] font-extrabold transition ${
+                                    className={`min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:px-3 sm:py-2 rounded-lg text-sm font-extrabold transition ${
                                       q.answer === letter
                                         ? 'bg-emerald-500 text-white'
                                         : 'bg-slate-100 dark:bg-zinc-800 text-slate-500 hover:border-emerald-400'
                                     }`}
                                     title={`${t('correctAnswer')}: ${letter}`}
+                                    aria-label={`${t('correctAnswer')}: ${letter}`}
                                   >
                                     ✓
                                   </button>
@@ -810,13 +811,13 @@ export default function HomeworkTab() {
                             })}
                           </div>
 
-                          <div className="flex items-center gap-3 ltr:pl-9 rtl:pr-9 flex-wrap">
+                          <div className="flex items-center gap-3 ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9 flex-wrap">
                             <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
                               {t('correctAnswer')}:
                               <select
                                 value={q.answer}
                                 onChange={(e) => updateQuestion(idx, { answer: e.target.value })}
-                                className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs font-extrabold"
+                                className="px-3 py-2.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm font-extrabold focus:outline-none focus:ring-2 focus:ring-yellow-400"
                               >
                                 {['A', 'B', 'C', 'D'].map((l) => <option key={l} value={l}>{l}</option>)}
                               </select>
@@ -826,7 +827,7 @@ export default function HomeworkTab() {
                               <input
                                 type="number" min="0.5" step="0.5" value={q.points}
                                 onChange={(e) => updateQuestion(idx, { points: e.target.value })}
-                                className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs font-extrabold text-center"
+                                className="w-24 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-yellow-400"
                               />
                             </label>
                           </div>

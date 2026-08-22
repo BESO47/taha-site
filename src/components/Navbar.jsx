@@ -34,6 +34,13 @@ export default function Navbar() {
     setMobileLessonsOpen(false)
   }, [location.pathname])
 
+  // Lock body scroll while the mobile drawer is open so the page cannot
+  // scroll behind it and leave the drawer stranded.
+  useEffect(() => {
+    document.body.style.overflow = open ? 'hidden' : ''
+    return () => { document.body.style.overflow = '' }
+  }, [open])
+
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (lessonsMenuRef.current && !lessonsMenuRef.current.contains(e.target)) {
@@ -272,7 +279,7 @@ export default function Navbar() {
           <div className="flex md:hidden items-center gap-2">
             <button
               onClick={toggleLanguage}
-              className="p-2 rounded-xl bg-yellow-400/15 text-yellow-300 text-xs font-extrabold flex items-center gap-1 border border-yellow-400/40"
+              className="min-h-[44px] min-w-[44px] p-2 rounded-xl bg-yellow-400/15 text-yellow-300 text-xs font-extrabold flex items-center justify-center gap-1 border border-yellow-400/40"
               aria-label={t('switchLangLabel')}
             >
               <Globe className="w-4 h-4 text-yellow-400" />
@@ -281,7 +288,7 @@ export default function Navbar() {
 
             <button
               onClick={() => setDark((v) => !v)}
-              className="p-2 rounded-xl bg-zinc-800 text-zinc-200"
+              className="min-h-[44px] min-w-[44px] p-2 rounded-xl bg-zinc-800 text-zinc-200 flex items-center justify-center"
               aria-label="Toggle Theme"
             >
               {dark ? <Sun className="w-5 h-5 text-yellow-400" /> : <Moon className="w-5 h-5 text-yellow-300" />}
@@ -289,7 +296,7 @@ export default function Navbar() {
 
             <button
               onClick={() => setOpen((v) => !v)}
-              className="p-2 rounded-xl text-white hover:bg-white/10"
+              className="min-h-[44px] min-w-[44px] p-2 rounded-xl text-white hover:bg-white/10 flex items-center justify-center"
               aria-expanded={open}
             >
               {open ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
