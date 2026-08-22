@@ -74,7 +74,12 @@ export function createApp({ authenticate = authenticateAdmin } = {}) {
   app.use(securityHeaders)
   app.use(createRateLimiter())
   app.use(cors(corsOptions))
-  app.use(express.json({ limit: '256kb', strict: true }))
+  // Bulk jobs carry one rendered message per recipient. 256 KB rejected
+  // realistic campaigns (HTTP 413 at ~250 recipients with an Arabic
+  // template); size the cap for the worst case instead: maxRecipientsPerJob
+  // × a 4 KB message rendered in multi-byte UTF-8, plus envelope overhead.
+  // Override with WA_JSON_BODY_LIMIT if maxRecipientsPerJob is raised.
+  app.use(express.json({ limit: config.jsonBodyLimit, strict: true }))
 
   const router = express.Router()
 

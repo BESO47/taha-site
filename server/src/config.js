@@ -83,6 +83,12 @@ export const config = {
   batchPauseMs: integer(process.env.WA_BATCH_PAUSE_MS, 60_000, { max: 3_600_000 }),
   defaultCountryCode: (process.env.WA_DEFAULT_COUNTRY_CODE || '20').replace(/\D/g, '').slice(0, 3) || '20',
   verifyNumbers: bool(process.env.WA_VERIFY_NUMBERS, true),
+
+  // HTTP JSON body cap. Must hold a full bulk payload: worst case ≈
+  // maxRecipientsPerJob(messages) × 4 KB localized text × ~2 (UTF-8 + JSON
+  // overhead). 10 MB comfortably covers the default 1 000-recipient limit
+  // with maximum-length messages; raise together with WA_MAX_RECIPIENTS.
+  jsonBodyLimit: (process.env.WA_JSON_BODY_LIMIT || '10mb').trim(),
 }
 
 export const isCloudApiConfigured = () => Boolean(config.cloudApi.token && config.cloudApi.phoneNumberId)

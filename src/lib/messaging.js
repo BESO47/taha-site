@@ -10,7 +10,11 @@
  *   - {{last_homework_grade}}     : Latest Homework Submission Grade (e.g. 9/10)
  */
 
-import { normalizePhone, formatPhoneWithPlus, validatePhone } from './whatsapp'
+// NOTE: import from the dependency-free `phoneCore` (NOT from ./whatsapp,
+// which pulls in supabase). `buildChatUrl` was previously referenced here
+// without being imported at all — a ReferenceError that crashed every bulk
+// dispatch as soon as a message URL was built.
+import { validatePhone, buildChatUrl } from './phoneCore.js'
 
 /** The variable tags the template editor exposes. */
 export const TEMPLATE_VARIABLES = [
@@ -56,19 +60,27 @@ export function buildVariableValues(record = {}, { lang = 'ar', attendance = 'bo
   const hwLabels = HOMEWORK_LABELS[lang] || HOMEWORK_LABELS.ar
 
   // ---- overall attendance: "85% (12/14)" / "85%" / "12/14" ----
+  // `attendance_percent` may be null (e.g. old rows); derive it from the
+  // counts so the template tag is never left unreplaced in a sent message.
   const total = Number(record.total_sessions) || 0
   const attended = (Number(record.present_count) || 0) + (Number(record.late_count) || 0)
-  const pct = record.attendance_percent != null ? `${fmt(record.attendance_percent)}%` : null
+  const percentValue =
+    record.attendance_percent != null
+      ? record.attendance_percent
+      : total > 0
+        ? (attended / total) * 100
+        : null
+  const pctText = percentValue != null ? `${fmt(percentValue)}%` : null
 
   let overall_attendance
   if (!total) {
     overall_attendance = '—'
   } else if (attendance === 'percent') {
-    overall_attendance = pct
+    overall_attendance = pctText || '—'
   } else if (attendance === 'ratio') {
     overall_attendance = `${attended}/${total}`
   } else {
-    overall_attendance = `${pct} (${attended}/${total})`
+    overall_attendance = pctText ? `${pctText} (${attended}/${total})` : `${attended}/${total}`
   }
 
   // ---- last session attendance ----
@@ -105,11 +117,17 @@ export function buildVariableValues(record = {}, { lang = 'ar', attendance = 'bo
   }
 }
 
-/** Replace {{variable}} and {variable} tags. Unknown tags stay as-is. */
+/**
+ * Replace {{variable}} and {variable} tags.
+ * Unknown tags stay as-is; KNOWN tags are always replaced (null/empty
+ * becomes a dash) so template syntax never leaks into a sent message.
+ */
 export function compileTemplate(template, values) {
-  const replace = (match, key) => (
-    values[key] != null && values[key] !== '' ? String(values[key]) : match
-  )
+  const replace = (match, key) => {
+    if (!Object.prototype.hasOwnProperty.call(values, key)) return match
+    const value = values[key]
+    return value != null && value !== '' ? String(value) : '—'
+  }
   return String(template || '')
     .replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, replace)
     .replace(/\{([a-zA-Z0-9_]+)\}/g, replace)

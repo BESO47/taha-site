@@ -21,110 +21,19 @@ import {
   resumeJob as resumeGatewayJob,
   sendSingleMessage,
 } from './whatsappGateway'
+import { normalizePhone, validatePhone, buildChatUrl } from './phoneCore.js'
 
-/**
- * Normalizes any phone input into standard international digits-only format.
- * Defaults to Egypt (+20) if leading 0 or 1 is provided.
- *
- * Examples:
- *   '01012345678'    -> '201012345678'
- *   '+201012345678'  -> '201012345678'
- *   '00201012345678' -> '201012345678'
- *   '011 2345-6789'  -> '201123456789'
- *   '+966 50 1234567'-> '966501234567'
- */
-export function normalizePhone(raw, defaultCountryCode = '20') {
-  if (!raw) return ''
-  let digits = String(raw).replace(/\D/g, '')
-
-  if (!digits) return ''
-
-  // Strip international double-zero prefix (0020... -> 20...)
-  if (digits.startsWith('00')) {
-    digits = digits.slice(2)
-  }
-
-  // Already prefixed with country code
-  if (digits.startsWith(defaultCountryCode)) {
-    return digits
-  }
-
-  // Egyptian local mobile numbers (010, 011, 012, 015) -> prepend 20
-  if (digits.startsWith('01') && digits.length === 11) {
-    return `${defaultCountryCode}${digits.slice(1)}`
-  }
-
-  // Missing leading 0 for 10-digit Egyptian mobile (10..., 11..., 12..., 15...)
-  if ((digits.startsWith('10') || digits.startsWith('11') || digits.startsWith('12') || digits.startsWith('15')) && digits.length === 10) {
-    return `${defaultCountryCode}${digits}`
-  }
-
-  // Standard leading 0 removal and prepending country code
-  if (digits.startsWith('0')) {
-    return `${defaultCountryCode}${digits.slice(1)}`
-  }
-
-  // If >= 10 digits and not starting with country code, return as is (international) or prepend default
-  if (digits.length >= 11) {
-    return digits
-  }
-
-  return `${defaultCountryCode}${digits}`
-}
-
-/**
- * Formats a phone number with leading `+` for display or specific API integrations.
- */
-export function formatPhoneWithPlus(phone) {
-  const norm = normalizePhone(phone)
-  return norm ? `+${norm}` : ''
-}
-
-/**
- * Validates whether a phone number is structurally valid.
- */
-export function validatePhone(raw, defaultCountryCode = '20') {
-  if (!raw || !String(raw).trim()) {
-    return {
-      isValid: false,
-      normalized: '',
-      formatted: '',
-      error: 'رقم الهاتف مطلوب / Phone number is required',
-    }
-  }
-
-  const normalized = normalizePhone(raw, defaultCountryCode)
-
-  if (normalized.length < 10 || normalized.length > 15) {
-    return {
-      isValid: false,
-      normalized,
-      formatted: `+${normalized}`,
-      error: `طول رقم الهاتف غير صالح (${normalized.length} أرقام) / Invalid phone length`,
-    }
-  }
-
-  // Check Egyptian format specific rules
-  if (normalized.startsWith('20')) {
-    const localPart = normalized.slice(2)
-    const validPrefix = /^(10|11|12|15)\d{8}$/.test(localPart)
-    if (!validPrefix) {
-      return {
-        isValid: false,
-        normalized,
-        formatted: `+${normalized}`,
-        error: 'رقم محمول مصري غير صالح (يجب أن يبدأ بـ 010 أو 011 أو 012 أو 015 ومكون من 11 رقماً)',
-      }
-    }
-  }
-
-  return {
-    isValid: true,
-    normalized,
-    formatted: `+${normalized}`,
-    error: null,
-  }
-}
+// Phone normalization/validation and URL builders live in the dependency-free
+// `phoneCore.js` (unit-testable in Node). Re-exported here so every existing
+// consumer of `lib/whatsapp.js` keeps working unchanged.
+export {
+  normalizePhone,
+  formatPhoneWithPlus,
+  validatePhone,
+  isMobileDevice,
+  buildChatUrl,
+  buildNativeWhatsAppUrl,
+} from './phoneCore.js'
 
 function pct(n) {
   const v = Number(n)
@@ -232,39 +141,6 @@ export function buildReportMessage({
   return L.join('\n')
 }
 
-/** Detect coarse device class for WhatsApp deep-link routing. */
-export function isMobileDevice() {
-  if (typeof navigator === 'undefined') return false
-  const ua = navigator.userAgent || ''
-  const touch = typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)
-    || (touch && /Macintosh/i.test(ua))
-}
-
-/**
- * Device-aware WhatsApp send URL.
- * Mobile: api.whatsapp.com / whatsapp:// (native app)
- * Desktop: web.whatsapp.com
- * Phone is digits-only international (no +).
- */
-export function buildChatUrl(phone, message, { mobile } = {}) {
-  const to = normalizePhone(phone)
-  if (!to) return null
-  const text = encodeURIComponent(message ?? '')
-  const useMobile = mobile ?? isMobileDevice()
-  if (useMobile) {
-    return `https://api.whatsapp.com/send?phone=${to}&text=${text}`
-  }
-  return `https://web.whatsapp.com/send?phone=${to}&text=${text}`
-}
-
-/** Native-scheme fallback when the https deep link is blocked. */
-export function buildNativeWhatsAppUrl(phone, message) {
-  const to = normalizePhone(phone)
-  if (!to) return null
-  return `whatsapp://send?phone=${to}&text=${encodeURIComponent(message ?? '')}`
-}
-
 /** Open WhatsApp with the message pre-filled (one recipient). */
 export function openWhatsApp(phone, message) {
   const to = normalizePhone(phone)
@@ -329,10 +205,11 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/**
- * Log WhatsApp outgoing message status to database table `whatsapp_logs`.
- */
-export async function logWhatsAppDispatch({
+const LOG_STORAGE_KEY = 'physics_hub_whatsapp_logs'
+const LOG_BATCH_SIZE = 200
+
+/** Normalize one log entry into the whatsapp_logs row shape. */
+function buildLogRow({
   studentId = null,
   phone,
   recipientName = '',
@@ -341,48 +218,69 @@ export async function logWhatsAppDispatch({
   status = 'sent',
   errorMessage = null,
 }) {
-  const normalizedPhone = normalizePhone(phone)
+  return {
+    student_id: studentId || null,
+    phone: normalizePhone(phone),
+    recipient_name: recipientName || null,
+    recipient_type: recipientType || 'student',
+    message_body: messageBody,
+    status,
+    error_message: errorMessage || null,
+    sent_at: new Date().toISOString(),
+  }
+}
 
-  // Keep personal message history out of browser storage in configured
-  // deployments. Local history exists only for explicit offline/demo mode.
+/**
+ * Persist log rows. In offline/demo mode they are prepended to a bounded
+ * localStorage list; otherwise they are inserted into Supabase in chunks so
+ * a campaign with thousands of recipients costs a handful of requests
+ * instead of one HTTP round-trip per message.
+ */
+async function persistLogRows(rows) {
+  if (!rows.length) return
+
   if (!isSupabaseConfigured()) {
+    // Keep personal message history out of browser storage in configured
+    // deployments. Local history exists only for explicit offline/demo mode.
     try {
-      const key = 'physics_hub_whatsapp_logs'
-      const existing = JSON.parse(localStorage.getItem(key) || '[]')
-      const newEntry = {
-        id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        student_id: studentId,
-        phone: normalizedPhone,
-        recipient_name: recipientName,
-        recipient_type: recipientType,
-        message_body: messageBody,
-        status,
-        error_message: errorMessage,
-        sent_at: new Date().toISOString(),
-      }
-      localStorage.setItem(key, JSON.stringify([newEntry, ...existing].slice(0, 200)))
+      const existing = JSON.parse(localStorage.getItem(LOG_STORAGE_KEY) || '[]')
+      const stamped = rows.map((row, i) => ({
+        id: `log_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`,
+        ...row,
+      }))
+      localStorage.setItem(LOG_STORAGE_KEY, JSON.stringify([...stamped, ...existing].slice(0, 200)))
     } catch (_) {}
+    return
   }
 
-  // Persist to Supabase if configured
-  if (isSupabaseConfigured()) {
-    try {
-      const { error } = await supabase.from('whatsapp_logs').insert([
-        {
-          student_id: studentId || null,
-          phone: normalizedPhone,
-          recipient_name: recipientName || null,
-          recipient_type: recipientType || 'student',
-          message_body: messageBody,
-          status,
-          error_message: errorMessage || null,
-          sent_at: new Date().toISOString(),
-        },
-      ])
-      if (error) throw error
-    } catch (err) {
-      console.warn('Failed to insert into whatsapp_logs table:', err)
-    }
+  for (let i = 0; i < rows.length; i += LOG_BATCH_SIZE) {
+    const { error } = await supabase
+      .from('whatsapp_logs')
+      .insert(rows.slice(i, i + LOG_BATCH_SIZE))
+    if (error) throw error
+  }
+}
+
+/**
+ * Log a single WhatsApp outgoing message status to `whatsapp_logs`.
+ */
+export async function logWhatsAppDispatch(entry) {
+  try {
+    await persistLogRows([buildLogRow(entry)])
+  } catch (err) {
+    console.warn('Failed to insert into whatsapp_logs table:', err)
+  }
+}
+
+/**
+ * Batched variant for bulk campaigns: one call for the whole job result.
+ * Logging failures never fail the campaign itself.
+ */
+export async function logBulkDispatches(entries = []) {
+  try {
+    await persistLogRows(entries.map(buildLogRow))
+  } catch (err) {
+    console.warn('Failed to batch-insert into whatsapp_logs table:', err)
   }
 }
 
@@ -403,7 +301,7 @@ export async function fetchWhatsAppLogs({ limit = 50 } = {}) {
 
   // Fallback to local storage
   try {
-    const raw = localStorage.getItem('physics_hub_whatsapp_logs')
+    const raw = localStorage.getItem(LOG_STORAGE_KEY)
     if (raw) return JSON.parse(raw).slice(0, limit)
   } catch (err) {}
 
@@ -466,7 +364,7 @@ export async function dispatchWhatsAppLinksSequentially(
     if (!validation.isValid || !url) {
       failedCount++
       const errorMsg = validation.error || 'Invalid phone number format'
-      errors.push({ index: i + 1, studentName, phone: rawPhone, error: errorMsg })
+      errors.push({ index: i + 1, studentId, studentName, phone: rawPhone, error: errorMsg })
       await logWhatsAppDispatch({
         studentId,
         phone: rawPhone || 'unknown',
@@ -520,7 +418,7 @@ export async function dispatchWhatsAppLinksSequentially(
     } catch (err) {
       failedCount++
       const errMsg = err.message || 'Could not open WhatsApp chat'
-      errors.push({ index: i + 1, studentName, phone: rawPhone, error: errMsg })
+      errors.push({ index: i + 1, studentId, studentName, phone: rawPhone, error: errMsg })
       await logWhatsAppDispatch({
         studentId,
         phone: validation.normalized,
@@ -637,7 +535,7 @@ function jobToSummary(job) {
     failedCount: job.failed,
     errors: results
       .filter((r) => r.status === 'failed')
-      .map((r) => ({ index: r.index + 1, studentName: r.name, phone: r.phone, error: r.error })),
+      .map((r) => ({ index: r.index + 1, studentId: r.studentId || null, studentName: r.name, phone: r.phone, error: r.error })),
     logs: results.map((r) => ({
       studentName: r.name,
       phone: r.normalizedPhone || r.phone,
@@ -693,16 +591,20 @@ export async function dispatchBulkViaGateway(
   })
 
   // Mirror the outcome into whatsapp_logs so the History modal stays useful.
-  for (const r of finished.results || []) {
-    await logWhatsAppDispatch({
+  // Batched: thousands of results cost ceil(n/200) requests, not one-each.
+  // Dry runs are rehearsals: they must NOT write delivery history.
+  if (!finished.dryRun) {
+    await logBulkDispatches(
+      (finished.results || []).map((r) => ({
       studentId: r.studentId || null,
       phone: r.normalizedPhone || r.phone,
       recipientName: r.name,
       recipientType: r.recipientType || 'student',
-      messageBody: messages[r.index]?.message || '',
-      status: r.status === 'sent' ? 'sent' : 'failed',
-      errorMessage: r.error || null,
-    })
+        messageBody: messages[r.index]?.message || '',
+        status: r.status === 'sent' ? 'sent' : 'failed',
+        errorMessage: r.error || null,
+      }))
+    )
   }
 
   return jobToSummary(finished)
