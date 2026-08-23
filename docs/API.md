@@ -39,7 +39,7 @@ Common statuses: `400` invalid input, `401` missing/invalid authentication, `403
 
 ## Gateway endpoints
 
-Base URL: `/api/whatsapp`. Request body limit: 256 KB. Default rate limit: 120 requests/minute/IP.
+Base URL: `/api/whatsapp`. Request body limit: 10 MB by default (`WA_JSON_BODY_LIMIT`), sized so a full `WA_MAX_RECIPIENTS` bulk campaign with localized multi-byte messages is never rejected with 413. Default rate limit: 120 requests/minute/IP.
 
 ### `GET /health`
 
