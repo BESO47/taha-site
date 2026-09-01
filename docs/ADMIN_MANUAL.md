@@ -18,13 +18,23 @@ Open `/admin`. Overview cards show student count, active count, attendance rate,
 
 ### Manage a student
 
-- Search/filter by grade or group.
-- Open a student to review analytics, grades, attendance, homework, and submissions.
-- Toggle active/suspended state.
-- Assign a group from the student's grade.
+- Search by name, email, or phone; filter by grade, group, or active/suspended status.
+- Pagination loads 20 students at a time (server-side).
+- Click a student name to open the **Student Details** modal with full profile, contact info, analytics, grades, attendance history, and homework results.
+- Click the **Edit** icon to modify: name, email, phone, parent phone, grade, group, governorate, and active status. Email changes sync with Supabase Auth automatically.
+- Click **Change Password** to set a new password for a student (8+ characters). The old password is never exposed or retrievable.
+- Toggle active/suspended state with the status button.
+- Assign a group from the inline dropdown.
 - Use the WhatsApp button to send a student/guardian report.
 
 Suspension blocks protected access and submissions. Student year/group are authorization fields and must be managed by an administrator.
+
+### Bulk student actions
+
+1. Use the checkbox next to each student (or "Select All") to select multiple students.
+2. Choose a bulk action: Assign Group, Activate, or Suspend.
+3. Confirm in the dialog.
+4. The operation runs as a single set-based database RPC — not individual requests.
 
 ### Groups
 
@@ -39,12 +49,14 @@ Suspension blocks protected access and submissions. Student year/group are autho
 ### Create/edit
 
 1. Open **Homework**.
-2. Enter title, description, year, optional group/branch/due date.
-3. Add questions, choices, answer key, and positive point values.
-4. Optionally add HTTPS attachment and explanation-video URLs.
-5. Set publication status and save.
+2. Enter title, description, year, optional branch/due date.
+3. **Target Groups**: Check one or more groups to restrict the homework to those groups. If no groups are selected, the homework is available to all students of the selected grade (general assignment). Multi-group uses a normalized junction table (`assignment_groups`), not comma-separated names.
+4. Add questions with choices, answer key, and positive point values.
+5. **Subpoints**: Click "Add Subpoint" on any question to add nested Roman-numeral sub-items (i, ii, iii…). Each subpoint has its own text, points value, and optional answer for auto-grading.
+6. Optionally add HTTPS attachment and explanation-video URLs.
+7. Set publication status and save.
 
-Published entries are visible only to active matching-year students and either everyone in that year (no group) or the selected group. The student response never includes answer-key fields.
+Published entries are visible only to active matching-year students who belong to one of the selected groups (or all students if no groups selected). The student response never includes answer-key fields.
 
 ### Grade and regrade
 
@@ -72,11 +84,13 @@ Students see only their own grade records.
 ## Attendance
 
 1. Select session date.
-2. Filter students/group.
-3. Mark present, absent, late, or excused.
-4. Save the batch.
+2. Filter students by grade, group, or search by name/phone.
+3. Mark present, absent, late, or excused. Previously recorded statuses show as highlighted.
+4. **Edit**: Click a different status button to change an existing record. Changed rows are highlighted yellow.
+5. **Cancel Attendance**: Click the "Cancel" (✕) button next to a student to delete their attendance record for that date. A confirmation dialog prevents accidental deletion. The database record is actually deleted (not just hidden).
+6. Save the batch.
 
-The unique student/date key prevents duplicate session records.
+The unique student/date key prevents duplicate session records. Only admins can write or delete attendance records.
 
 ## Lessons and past exams
 

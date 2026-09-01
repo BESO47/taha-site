@@ -184,6 +184,8 @@ export default function HomeworkSubmitCard({
                   (b) => String(b.questionId) === qId || Number(b.number) === qi + 1
                 )
                 const revealKey = Boolean(reviewed) || isGraded
+                const hasSubpoints = q.subpoints?.length > 0
+                const romanNumerals = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x']
 
                 return (
                   <div key={qId} className="space-y-1.5">
@@ -197,37 +199,92 @@ export default function HomeworkSubmitCard({
                           : <XCircle className="w-4 h-4 text-red-500 shrink-0" />
                       )}
                     </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                      {(q.options || []).map((opt, oi) => {
-                        const letter = OPTION_LETTERS[oi]
-                        const correctAnswer = reviewed?.correctAnswer ?? q.answer ?? q.correctAnswer
-                        const isKey = revealKey && letter === toOptionLetter(correctAnswer, q.options)
-                        const isChosen = chosen === letter
-                        const wrongChoice = revealKey && isChosen && !isKey
+                    {/* MCQ options (only for questions without subpoints) */}
+                    {!hasSubpoints && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {(q.options || []).map((opt, oi) => {
+                          const letter = OPTION_LETTERS[oi]
+                          const correctAnswer = reviewed?.correctAnswer ?? q.answer ?? q.correctAnswer
+                          const isKey = revealKey && letter === toOptionLetter(correctAnswer, q.options)
+                          const isChosen = chosen === letter
+                          const wrongChoice = revealKey && isChosen && !isKey
 
-                        return (
-                          <button
-                            key={oi}
-                            type="button"
-                            disabled={isGraded || busy}
-                            onClick={() => pickAnswer(qId, letter)}
-                            className={`px-3 py-2 rounded-lg text-[11px] font-bold border text-start transition disabled:cursor-not-allowed ${
-                              isKey
-                                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
-                                : wrongChoice
-                                  ? 'bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
-                                  : isChosen
-                                    ? 'bg-yellow-400 border-yellow-500 text-black'
-                                    : 'bg-slate-50 dark:bg-black/40 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:border-yellow-400/60'
-                            }`}
-                          >
-                            {opt}
-                            {isKey && ' ✓'}
-                            {wrongChoice && ' ✕'}
-                          </button>
-                        )
-                      })}
-                    </div>
+                          return (
+                            <button
+                              key={oi}
+                              type="button"
+                              disabled={isGraded || busy}
+                              onClick={() => pickAnswer(qId, letter)}
+                              className={`px-3 py-2 rounded-lg text-[11px] font-bold border text-start transition disabled:cursor-not-allowed ${
+                                isKey
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+                                  : wrongChoice
+                                    ? 'bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
+                                    : isChosen
+                                      ? 'bg-yellow-400 border-yellow-500 text-black'
+                                      : 'bg-slate-50 dark:bg-black/40 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:border-yellow-400/60'
+                              }`}
+                            >
+                              {opt}
+                              {isKey && ' ✓'}
+                              {wrongChoice && ' ✕'}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {/* Subpoints rendering */}
+                    {hasSubpoints && (
+                      <div className="ltr:pl-4 rtl:pr-4 space-y-2 mt-2">
+                        {q.subpoints.map((sp, spIdx) => {
+                          const spId = `${qId}.${sp.id || spIdx}`
+                          const spChosen = answers[spId] || ''
+                          const hasSpOptions = sp.options?.length > 0
+                          return (
+                            <div key={sp.id || spIdx} className="p-2.5 rounded-xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/40 dark:border-purple-800/40 space-y-1.5">
+                              <p className="text-[11px] font-bold flex items-start gap-1.5">
+                                <span className="text-purple-500 shrink-0" dir="ltr">({romanNumerals[spIdx] || spIdx + 1})</span>
+                                <span className="flex-1">{sp.text}</span>
+                                <span className="text-[10px] text-slate-400 font-mono">({sp.points} {t('pointsLabel')})</span>
+                              </p>
+                              {hasSpOptions ? (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                                  {sp.options.map((opt, oi) => {
+                                    const letter = OPTION_LETTERS[oi]
+                                    const isChosen = spChosen === letter
+                                    return (
+                                      <button
+                                        key={oi}
+                                        type="button"
+                                        disabled={isGraded || busy}
+                                        onClick={() => setAnswers((prev) => ({ ...prev, [spId]: letter }))}
+                                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold border text-start transition disabled:cursor-not-allowed ${
+                                          isChosen
+                                            ? 'bg-yellow-400 border-yellow-500 text-black'
+                                            : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:border-purple-400/60'
+                                        }`}
+                                      >
+                                        {opt}
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={spChosen}
+                                  onChange={(e) => setAnswers((prev) => ({ ...prev, [spId]: e.target.value }))}
+                                  disabled={isGraded || busy}
+                                  placeholder={lang === 'ar' ? 'إجابتك...' : 'Your answer...'}
+                                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs disabled:opacity-60"
+                                />
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )
               })}

@@ -2,6 +2,10 @@ import { supabase, isSupabaseConfigured } from './supabase'
 import { DEFAULT_GROUPS } from '../data/catalog'
 import { gradeSubmissionAgainstKey, summarizeGrades } from './grading'
 
+const MAX_SUBMISSION_FILE_BYTES = 10 * 1024 * 1024 // 10 MB
+const SUBMISSION_FILE_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp'])
+const SUBMISSION_FILE_EXTENSIONS = new Set(['pdf', 'jpg', 'jpeg', 'png', 'webp'])
+
 function optionalHttpsUrl(value, fieldName) {
   if (!value) return null
   let parsed
@@ -474,7 +478,15 @@ export async function upsertGrade({ quizId, studentId, score, notes }) {
 export function computeHomeworkTotalPoints(questions = []) {
   const arr = Array.isArray(questions) ? questions : []
   if (arr.length === 0) return 0
-  const sum = arr.reduce((acc, q) => acc + (Number(q.points) || 0), 0)
+  let sum = 0
+  for (const q of arr) {
+    if (q.subpoints?.length) {
+      // If question has subpoints, total = sum of subpoint points
+      sum += q.subpoints.reduce((acc, sp) => acc + (Number(sp.points) || 0), 0)
+    } else {
+      sum += Number(q.points) || 0
+    }
+  }
   return Math.round(sum * 100) / 100
 }
 
@@ -598,6 +610,26 @@ export async function fetchAssignments({ yearId = null } = {}) {
 export async function createHomeworkEntry(payload) {
   const questions = Array.isArray(payload.questions) ? payload.questions : []
   const totalPoints = computeHomeworkTotalPoints(questions) || Number(payload.maxScore) || 0
+  // Support both subpoints and flat questions
+  const flatQuestions = questions.map((q) => {
+    const base = {
+      id: q.id,
+      question: q.question?.trim() || '',
+      points: Number(q.points) || 1,
+    }
+    if (q.options?.length) base.options = q.options
+    if (q.answer) base.answer = q.answer
+    if (q.subpoints?.length) {
+      base.subpoints = q.subpoints.map((sp) => ({
+        id: sp.id,
+        text: sp.text?.trim() || '',
+        points: Number(sp.points) || 1,
+        ...(sp.options?.length ? { options: sp.options } : {}),
+        ...(sp.answer ? { answer: sp.answer } : {}),
+      }))
+    }
+    return base
+  })
   const row = {
     title: String(payload.title || '').trim(),
     description: String(payload.description || '').trim() || null,
@@ -606,7 +638,7 @@ export async function createHomeworkEntry(payload) {
     due_date: payload.dueDate || null,
     max_score: totalPoints || Number(payload.maxScore) || 100,
     total_points: totalPoints || null,
-    questions,
+    questions: flatQuestions,
     attachment_url: optionalHttpsUrl(payload.attachmentUrl, 'Attachment URL'),
     explanation_video_url: optionalHttpsUrl(payload.explanationVideoUrl, 'Explanation video URL'),
     explanation_video_title: String(payload.explanationVideoTitle || '').trim() || null,
@@ -617,7 +649,15 @@ export async function createHomeworkEntry(payload) {
   if (isSupabaseConfigured()) {
     const { data, error } = await supabase.from('assignments').insert([row]).select('*')
     if (error) throw error
-    return normalizeHomeworkEntry(data?.[0])
+    const entry = normalizeHomeworkEntry(data?.[0])
+    // Set multi-group assignments if groupIds provided
+    if (payload.groupIds?.length) {
+      try {
+        await setAssignmentGroups(entry.id, payload.groupIds)
+      } catch (_) {}
+    }
+    entry.groupIds = payload.groupIds || []
+    return entry
   }
 
   // LocalStorage fallback
@@ -640,6 +680,25 @@ export async function createHomeworkEntry(payload) {
 export async function updateHomeworkEntry(id, payload) {
   const questions = Array.isArray(payload.questions) ? payload.questions : []
   const totalPoints = computeHomeworkTotalPoints(questions) || Number(payload.maxScore) || 0
+  const flatQuestions = questions.map((q) => {
+    const base = {
+      id: q.id,
+      question: q.question?.trim() || '',
+      points: Number(q.points) || 1,
+    }
+    if (q.options?.length) base.options = q.options
+    if (q.answer) base.answer = q.answer
+    if (q.subpoints?.length) {
+      base.subpoints = q.subpoints.map((sp) => ({
+        id: sp.id,
+        text: sp.text?.trim() || '',
+        points: Number(sp.points) || 1,
+        ...(sp.options?.length ? { options: sp.options } : {}),
+        ...(sp.answer ? { answer: sp.answer } : {}),
+      }))
+    }
+    return base
+  })
   const row = {
     title: String(payload.title || '').trim(),
     description: String(payload.description || '').trim() || null,
@@ -648,7 +707,7 @@ export async function updateHomeworkEntry(id, payload) {
     due_date: payload.dueDate || null,
     max_score: totalPoints || Number(payload.maxScore) || 100,
     total_points: totalPoints || null,
-    questions,
+    questions: flatQuestions,
     attachment_url: optionalHttpsUrl(payload.attachmentUrl, 'Attachment URL'),
     explanation_video_url: optionalHttpsUrl(payload.explanationVideoUrl, 'Explanation video URL'),
     explanation_video_title: String(payload.explanationVideoTitle || '').trim() || null,
@@ -659,7 +718,15 @@ export async function updateHomeworkEntry(id, payload) {
   if (isSupabaseConfigured()) {
     const { data, error } = await supabase.from('assignments').update(row).eq('id', id).select('*')
     if (error) throw error
-    return normalizeHomeworkEntry(data?.[0])
+    const entry = normalizeHomeworkEntry(data?.[0])
+    // Update multi-group assignments
+    if (payload.groupIds !== undefined) {
+      try {
+        await setAssignmentGroups(id, payload.groupIds || [])
+      } catch (_) {}
+    }
+    entry.groupIds = payload.groupIds || []
+    return entry
   }
 
   const current = await fetchHomeworkEntries()
@@ -1185,7 +1252,7 @@ export async function fetchStudents() {
   if (isSupabaseConfigured()) {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, full_name, phone, parent_phone, year_id, group_name, group_id, governorate, is_active, role, created_at')
+      .select('id, full_name, email, phone, parent_phone, year_id, group_name, group_id, governorate, is_active, role, created_at')
       .eq('role', 'student')
       .order('created_at', { ascending: false })
     if (error) throw error
@@ -1321,6 +1388,168 @@ export async function fetchBulkMessagingReport({ yearId = null, groupName = null
   )
 
   return rows
+}
+
+// =====================================================================
+// PAGINATED STUDENT LISTING
+// =====================================================================
+export async function fetchStudentsPaginated({ page = 1, pageSize = 20, search = null, yearId = null, groupId = null, isActive = null } = {}) {
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('fetch_students_paginated', {
+      p_page: page,
+      p_page_size: pageSize,
+      p_search: search || null,
+      p_year_id: yearId && yearId !== 'all' ? String(yearId) : null,
+      p_group_id: groupId && groupId !== 'all' && groupId !== 'none' ? groupId : null,
+      p_is_active: isActive != null ? isActive : null,
+    })
+    if (error) throw error
+    return data || { data: [], total: 0, page: 1, pageSize, totalPages: 0 }
+  }
+
+  // Fallback: client-side pagination
+  const all = await fetchStudents()
+  let filtered = all
+  if (search) {
+    const q = search.toLowerCase()
+    filtered = filtered.filter((s) =>
+      s.full_name?.toLowerCase().includes(q) ||
+      (s.email || '').toLowerCase().includes(q) ||
+      (s.phone || '').includes(search)
+    )
+  }
+  if (yearId && yearId !== 'all') filtered = filtered.filter((s) => s.year_id === yearId)
+  if (groupId && groupId !== 'all' && groupId !== 'none') filtered = filtered.filter((s) => s.group_id === groupId)
+  if (isActive != null) filtered = filtered.filter((s) => s.is_active === isActive)
+
+  const total = filtered.length
+  const totalPages = Math.ceil(total / pageSize)
+  const start = (page - 1) * pageSize
+  return {
+    data: filtered.slice(start, start + pageSize),
+    total,
+    page,
+    pageSize,
+    totalPages,
+  }
+}
+
+// =====================================================================
+// ADMIN STUDENT MANAGEMENT
+// =====================================================================
+export async function adminUpdateStudent(studentId, payload) {
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('admin_update_student', {
+      target_user_id: studentId,
+      p_full_name: payload.fullName || null,
+      p_email: payload.email || null,
+      p_phone: payload.phone || null,
+      p_parent_phone: payload.parentPhone || null,
+      p_year_id: payload.yearId || null,
+      p_group_id: payload.groupId || null,
+      p_governorate: payload.governorate || null,
+      p_is_active: payload.isActive != null ? payload.isActive : null,
+    })
+    if (error) throw error
+    return data
+  }
+  return { id: studentId, ...payload }
+}
+
+export async function adminSetStudentPassword(studentId, newPassword) {
+  if (!newPassword || newPassword.length < 8) {
+    throw new Error('Password must be at least 8 characters')
+  }
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('admin_set_student_password', {
+      target_user_id: studentId,
+      new_password: newPassword,
+    })
+    if (error) throw error
+    return data
+  }
+  throw new Error('Password reset requires Supabase')
+}
+
+export async function adminInitiatePasswordReset(studentId) {
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('admin_initiate_password_reset', {
+      target_user_id: studentId,
+    })
+    if (error) throw error
+    return data
+  }
+  throw new Error('Password reset requires Supabase')
+}
+
+// =====================================================================
+// ATTENDANCE CANCELLATION
+// =====================================================================
+export async function cancelAttendance(studentId, sessionDate) {
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('cancel_attendance', {
+      p_student_id: studentId,
+      p_session_date: sessionDate,
+    })
+    if (error) throw error
+    return data
+  }
+  return false
+}
+
+// =====================================================================
+// BULK STUDENT OPERATIONS
+// =====================================================================
+export async function bulkUpdateStudentGroup(studentIds, groupId) {
+  if (!studentIds?.length) return 0
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('bulk_update_student_group', {
+      p_student_ids: studentIds,
+      p_group_id: groupId,
+    })
+    if (error) throw error
+    return data || 0
+  }
+  return 0
+}
+
+export async function bulkUpdateStudentStatus(studentIds, isActive) {
+  if (!studentIds?.length) return 0
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('bulk_update_student_status', {
+      p_student_ids: studentIds,
+      p_is_active: isActive,
+    })
+    if (error) throw error
+    return data || 0
+  }
+  return 0
+}
+
+// =====================================================================
+// MULTI-GROUP HOMEWORK ASSIGNMENT
+// =====================================================================
+export async function setAssignmentGroups(assignmentId, groupIds) {
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('set_assignment_groups', {
+      p_assignment_id: assignmentId,
+      p_group_ids: groupIds || [],
+    })
+    if (error) throw error
+    return data || 0
+  }
+  return 0
+}
+
+export async function getAssignmentGroups(assignmentId) {
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('get_assignment_groups', {
+      p_assignment_id: assignmentId,
+    })
+    if (error) throw error
+    return data || []
+  }
+  return []
 }
 
 // =====================================================================
