@@ -1230,7 +1230,17 @@ export async function adminUpdateSubmissionAnswer({ submissionId, questionId, su
       p_subpoint_id: subpointId ? String(subpointId) : null,
       p_new_answer: String(answer),
     })
-    if (error) throw describeBackendError(error, "Failed to update the student's answer")
+    if (error) {
+      const described = describeBackendError(error, "Failed to update the student's answer")
+      // Two deployment states make the editor refuse to save: the function is
+      // not installed, or it is installed but not granted. Both are fixed by
+      // the same two files, so say that instead of leaving a bare
+      // "permission denied" for the person trying to correct a grade.
+      if (described.code === 'MISSING_MIGRATION' || described.code === 'FORBIDDEN') {
+        described.message = `${described.message} The answer editor needs admin_update_submission_answer: apply homework-subpoints.sql and then migration-groups-and-admin-editing.sql in the Supabase SQL editor, and reload the PostgREST schema cache.`
+      }
+      throw described
+    }
     const row = Array.isArray(data) ? data[0] : data
     if (!row?.ok) throw new Error('The answer could not be changed')
 

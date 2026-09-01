@@ -10,6 +10,8 @@ const featuresSql = readFileSync(new URL('../migration-features.sql', import.met
 const apiClient = readFileSync(new URL('../src/lib/api.js', import.meta.url), 'utf8')
 const groupsSql = readFileSync(new URL('../migration-groups-and-admin-editing.sql', import.meta.url), 'utf8')
 const registerPage = readFileSync(new URL('../src/pages/RegisterPage.jsx', import.meta.url), 'utf8')
+const homeworkTab = readFileSync(new URL('../src/components/admin/HomeworkTab.jsx', import.meta.url), 'utf8')
+const gradingLib = readFileSync(new URL('../src/lib/grading.js', import.meta.url), 'utf8')
 
 const checks = [
   ['lesson reads go through a redacted view', () => {
@@ -59,6 +61,49 @@ const checks = [
     assert.match(subpointsSql, /SELECT \* INTO m FROM public\.ph_mark_answers\(v_questions, v_answers\)/)
     // The client posts only an answer — never a score or a percentage.
     assert.doesNotMatch(apiClient, /admin_update_submission_answer[\s\S]{0,400}p_score/)
+  }],
+  ['fixing the editor must not turn it into a client-side write', () => {
+    // The dialog is fed by the question definitions (`buildReviewBreakdown`),
+    // and repairing it must never become a direct table write from the browser:
+    // `submissions` has no admin UPDATE policy for answers and the grading
+    // columns are guarded by a trigger. The RPC stays the only write path.
+    assert.match(homeworkTab, /breakdown: buildReviewBreakdown\(\{/)
+    assert.match(gradingLib, /export function buildReviewBreakdown/)
+    // The repair only re-attaches display data: it never re-writes a mark.
+    const body = gradingLib.slice(gradingLib.indexOf('export function buildReviewBreakdown'))
+    assert.doesNotMatch(body.slice(0, 6000), /earnedPoints:|isCorrect:/,
+      'hydration must not invent marks — they stay as the database wrote them')
+    assert.doesNotMatch(homeworkTab, /\.from\(['"]submissions['"]\)\.update/)
+    assert.doesNotMatch(apiClient, /\.from\(['"]submissions['"]\)\.upsert\(\{[^}]*score/)
+    // Every stored breakdown row carries the options, so other readers of the
+    // column (reports, exports, SQL) see a complete picture too.
+    assert.match(subpointsSql, /'options', q_options,/)
+  }],
+  ['an unanswered or key-less paper stays reachable to the reviewer', () => {
+    // A submission must not be hidden just because the student left it blank:
+    // supplying the missing answer is precisely an admin's job.
+    assert.doesNotMatch(homeworkTab, /sub\?\.hasAnswers && \(/)
+    // And an item without options must not dead-end into an empty dialog.
+    assert.match(homeworkTab, /\(editAnswer\.options \|\| \[\]\)\.length \? \(/)
+    // A key-less item is still editable, but the score must not be promoted.
+    assert.match(subpointsSql, /v_status_after := CASE WHEN m\.total_points > 0 THEN 'graded' ELSE v_sub\.status END/)
+  }],
+  ['the score ceiling trusts the marker, and both copies stay identical', () => {
+    // schema.sql is canonical; the fix migration carries a byte-identical copy
+    // so that ONE file is enough on a live project. They must not drift.
+    const grab = (text) => {
+      const found = text.match(/CREATE OR REPLACE FUNCTION public\.validate_grade_bounds\(\)\n[\s\S]*?\$\$;/)
+      assert.ok(found, 'public.validate_grade_bounds is defined')
+      return found[0]
+    }
+    assert.equal(grab(schema), grab(groupsSql), 'both copies of the bound check must match exactly')
+    // Only the server-side marker may skip the bound, and only for submissions.
+    assert.match(schema,
+      /IF TG_TABLE_NAME = 'submissions'\s+AND COALESCE\(current_setting\('physics_hub\.autograde', true\), 'off'\) = 'on' THEN\s+RETURN NEW/)
+    // A student's own score never survives the grading guard, so the bypass is
+    // unreachable from the browser.
+    assert.match(schema, /NEW\.score\s+:= OLD\.score/)
+    assert.match(schema, /RAISE EXCEPTION 'Score % exceeds maximum %'/)
   }],
   ['answers are addressed by stable id, never by array index', () => {
     assert.match(subpointsSql, /WHERE COALESCE\(item ->> 'id', ''\) = v_sp_id/)

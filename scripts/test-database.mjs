@@ -284,6 +284,37 @@ try {
     assert.equal(r.breakdown[0].hasSubpoints, false)
   })
 
+  await check('a stored flat breakdown carries the options the answer editor lists', async () => {
+    // The admin "Edit Answer" dialog builds its choice list from the stored
+    // breakdown. A row without `options` used to open an EMPTY dialog whose
+    // confirm button could never be pressed, so an admin could not change a
+    // submitted answer at all. The marks must therefore travel together with
+    // the option list and the canonical key letter.
+    const { rows: [r] } = await client.query(
+      `SELECT * FROM public.ph_mark_answers($1::jsonb, $2::jsonb)`,
+      [JSON.stringify(LEGACY), JSON.stringify({ q1: 'A', q2: 'A' })]
+    )
+    const row = r.breakdown[0]
+    assert.deepEqual(row.options, ['A) Ampere', 'B) Volt'], 'options are stored with the mark')
+    assert.equal(row.correctLetter, 'A', 'the key letter is stored, not only its text')
+    assert.equal(row.studentLetter, 'A')
+    assert.equal(row.hasKey, true)
+    assert.equal(r.breakdown[1].correctLetter, 'B')
+    assert.equal(r.breakdown[1].isCorrect, false, 'q2 was answered A while the key is B')
+  })
+
+  await check('a key-less flat row still reports options so the editor is usable', async () => {
+    const KEYLESS = [{ id: 'q1', question: 'Explain', options: ['A) x', 'B) y'], answer: '', points: 2 }]
+    const { rows: [r] } = await client.query(
+      `SELECT * FROM public.ph_mark_answers($1::jsonb, $2::jsonb)`,
+      [JSON.stringify(KEYLESS), JSON.stringify({ q1: 'x' })]
+    )
+    assert.equal(r.breakdown[0].hasKey, false)
+    assert.equal(r.breakdown[0].correctLetter, null, 'no key is invented for a key-less item')
+    assert.equal(r.breakdown[0].options.length, 2, 'the item is still fully described')
+    assert.equal(Number(r.total_points), 0, 'and nothing is scored')
+  })
+
   /* ---------- 4. answer-key protection ------------------------------- */
   await check('strip_assessment_answers hides subpoint keys from students', async () => {
     const { rows: [r] } = await client.query(
@@ -504,6 +535,99 @@ try {
     assert.equal(r.res.status, 'submitted', 'no answer key -> still "submitted"')
     assert.equal(r.res.new_answer, 'Teacher note')
     await actingAs(client, null, null)()
+  })
+
+  /* ---------- 7b. a blank answer can be FILLED IN -------------------- */
+  await check('an admin can supply an answer the student never gave', async () => {
+    // The review screen must therefore open for an unanswered paper too:
+    // a missing answer is exactly the kind of thing this RPC fixes.
+    await actingAs(client, STU_A, 'authenticated')()
+    await client.query(
+      `INSERT INTO public.submissions (assignment_id, student_id, answers, status)
+       VALUES ($1,$2,$3::jsonb,'submitted')`,
+      [LEGACY_ASSIGNMENT, STU_A, JSON.stringify({ q1: 'A' })]
+    )
+    const { rows: [sub] } = await client.query(
+      `SELECT id FROM public.submissions WHERE assignment_id = $1 AND student_id = $2`,
+      [LEGACY_ASSIGNMENT, STU_A]
+    )
+    await actingAs(client, null, null)()
+
+    await actingAs(client, ADMIN, 'authenticated')()
+    const { rows: [r] } = await client.query(
+      `SELECT public.admin_update_submission_answer($1,'q2',NULL,'B') AS res`, [sub.id]
+    )
+    assert.equal(r.res.ok, true, 'a missing answer is one the admin may write')
+    assert.equal(r.res.previous_answer, null, 'there was nothing there before')
+    assert.equal(r.res.new_answer, 'B')
+    assert.equal(Number(r.res.score), 10, 'both questions now count (5 + 5)')
+    assert.equal(Number(r.res.correct_count), 2)
+
+    const { rows: [audit] } = await client.query(
+      `SELECT previous_answer, new_answer FROM public.submission_answer_edits WHERE submission_id = $1`,
+      [sub.id]
+    )
+    assert.equal(audit.previous_answer, null, 'the audit row records the blank as blank')
+    assert.equal(audit.new_answer, 'B')
+    await actingAs(client, null, null)()
+  })
+
+  /* ---------- 7c. a stale ceiling must not veto an honest re-grade ----- */
+  await check('an answer edit survives a stale assignments.max_score', async () => {
+    // Legacy entries can still carry a maximum that predates their questions:
+    // the stored ceiling used to be the ONLY bound, so re-marking a paper
+    // whose key is worth more than that number was refused outright
+    // ("Score 12.00 exceeds maximum 10.00") and the admin could not change
+    // the answer at all.
+    const { rows: [{ id: staleId }] } = await client.query(
+      `INSERT INTO public.assignments (title, year_id, is_published, max_score, questions, created_by)
+       VALUES ('Stale ceiling homework','5',true,10,$1::jsonb,$2) RETURNING id`,
+      [JSON.stringify([
+        { id: 'q1', question: 'A?', options: ['A) x', 'B) y'], answer: 'A', points: 6 },
+        { id: 'q2', question: 'B?', options: ['A) x', 'B) y'], answer: 'B', points: 6 },
+      ]), ADMIN]
+    )
+    await client.query(`UPDATE public.assignments SET total_points = NULL WHERE id = $1`, [staleId])
+
+    await actingAs(client, STU_B, 'authenticated')()
+    await client.query(
+      `INSERT INTO public.submissions (assignment_id, student_id, answers, status)
+       VALUES ($1,$2,$3::jsonb,'submitted')`,
+      [staleId, STU_B, JSON.stringify({ q1: 'A', q2: 'A' })]
+    )
+    const { rows: [staleSub] } = await client.query(
+      `SELECT id FROM public.submissions WHERE assignment_id = $1 AND student_id = $2`,
+      [staleId, STU_B]
+    )
+    await actingAs(client, null, null)()
+
+    await actingAs(client, ADMIN, 'authenticated')()
+    const { rows: [r] } = await client.query(
+      `SELECT public.admin_update_submission_answer($1,'q2',NULL,'B') AS res`, [staleSub.id]
+    )
+    assert.equal(Number(r.res.score), 12, 'the marker total is honored, not the stale 10')
+    assert.equal(Number(r.res.total_points), 12)
+    assert.equal(r.res.status, 'graded')
+    await actingAs(client, null, null)()
+
+    // The bypass is only for server-computed writes: a direct table write
+    // beyond the recorded total is still refused, even for an admin.
+    await actingAs(client, ADMIN, 'authenticated')()
+    await assert.rejects(
+      client.query(`UPDATE public.submissions SET score = 99 WHERE id = $1`, [staleSub.id]),
+      /exceeds maximum/
+    )
+    await actingAs(client, null, null)()
+
+    // And a student still cannot post a score: the grading guard restores the
+    // stored one before this trigger looks at it.
+    await actingAs(client, STU_B, 'authenticated')()
+    await client.query(`UPDATE public.submissions SET score = 99 WHERE id = $1`, [staleSub.id])
+    await actingAs(client, null, null)()
+    const { rows: [untouched] } = await client.query(
+      `SELECT score FROM public.submissions WHERE id = $1`, [staleSub.id]
+    )
+    assert.equal(Number(untouched.score), 12, 'the student write changed nothing')
   })
 
   /* ---------- 8. admin password reset -------------------------------- */

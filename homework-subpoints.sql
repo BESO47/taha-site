@@ -304,6 +304,7 @@ BEGIN
             'options', sp_options, 'points', sp_points, 'hasKey', FALSE,
             'answered', sp_answered, 'studentAnswer', COALESCE(sp_stu_raw, ''),
             'studentLetter', sp_stu_letter, 'correctAnswer', NULL,
+            'correctLetter', NULL,
             'isCorrect', FALSE, 'earnedPoints', 0
           );
           CONTINUE;
@@ -346,6 +347,7 @@ BEGIN
           'answered', sp_answered, 'studentAnswer', COALESCE(sp_stu_raw, ''),
           'studentLetter', sp_stu_letter,
           'correctAnswer', COALESCE(sp_key_letter, sp_key_raw),
+          'correctLetter', sp_key_letter,
           'isCorrect', sp_correct,
           'earnedPoints', CASE WHEN sp_correct THEN sp_points ELSE 0 END
         );
@@ -383,9 +385,11 @@ BEGIN
       IF NOT answered THEN unanswered_count := unanswered_count + 1; END IF;
       items := items || jsonb_build_object(
         'questionId', q_id, 'number', i, 'question', q ->> 'question',
+        'options', q_options,
         'points', q_points, 'hasKey', FALSE, 'hasSubpoints', FALSE, 'answered', answered,
         'studentAnswer', stu_raw, 'studentLetter', stu_letter,
-        'correctAnswer', NULL, 'isCorrect', FALSE, 'earnedPoints', 0,
+        'correctAnswer', NULL, 'correctLetter', NULL,
+        'isCorrect', FALSE, 'earnedPoints', 0,
         'subpoints', '[]'::jsonb
       );
       CONTINUE;
@@ -418,9 +422,11 @@ BEGIN
 
     items := items || jsonb_build_object(
       'questionId', q_id, 'number', i, 'question', q ->> 'question',
+      'options', q_options,
       'points', q_points, 'hasKey', TRUE, 'hasSubpoints', FALSE, 'answered', answered,
       'studentAnswer', stu_raw, 'studentLetter', stu_letter,
-      'correctAnswer', COALESCE(key_letter, key_raw), 'isCorrect', correct,
+      'correctAnswer', COALESCE(key_letter, key_raw), 'correctLetter', key_letter,
+      'isCorrect', correct,
       'earnedPoints', CASE WHEN correct THEN q_points ELSE 0 END,
       'subpoints', '[]'::jsonb
     );

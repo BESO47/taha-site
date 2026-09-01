@@ -1244,12 +1244,33 @@ DECLARE
   allowed_score NUMERIC;
 BEGIN
   IF NEW.score IS NULL THEN RETURN NEW; END IF;
+
+  -- A score the answer-key marker computed is not a client input.
+  -- `physics_hub.autograde` is set only inside the SECURITY DEFINER grading
+  -- RPCs, in the same transaction as the write, and it is exactly the flag
+  -- guard_submission_grading above already recognizes. Without this, an
+  -- honest re-grade could be vetoed by a stale `assignments.max_score`
+  -- ("Score 12.00 exceeds maximum 10.00"), which made the admin answer
+  -- editor look broken: pressing Confirm changed nothing and errored.
+  IF TG_TABLE_NAME = 'submissions'
+     AND COALESCE(current_setting('physics_hub.autograde', true), 'off') = 'on' THEN
+    RETURN NEW;
+  END IF;
+
   IF TG_TABLE_NAME = 'grades' THEN
     SELECT max_score INTO allowed_score FROM public.quizzes WHERE id = NEW.quiz_id;
   ELSE
-    SELECT COALESCE(total_points, max_score) INTO allowed_score
-    FROM public.assignments WHERE id = NEW.assignment_id;
+    -- The row's own recorded total is a legitimate ceiling too, because the
+    -- marker writes it from the key in the same statement. A student can never
+    -- reach here with an inflated score: guard_submission_grading fires first
+    -- (BEFORE triggers run in name order) and restores the stored score.
+    SELECT COALESCE(a.total_points, a.max_score) INTO allowed_score
+    FROM public.assignments a WHERE a.id = NEW.assignment_id;
+    IF NEW.total_points IS NOT NULL THEN
+      allowed_score := GREATEST(COALESCE(allowed_score, NEW.total_points), NEW.total_points);
+    END IF;
   END IF;
+
   IF allowed_score IS NOT NULL AND NEW.score > allowed_score THEN
     RAISE EXCEPTION 'Score % exceeds maximum %', NEW.score, allowed_score USING ERRCODE = '22023';
   END IF;

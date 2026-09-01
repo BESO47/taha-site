@@ -80,6 +80,66 @@ Legacy flat subpoint keys written by earlier builds (`"q2.sp_a"`) are still read
 5. Appends a row to `submission_answer_edits` (student, submission, question, subpoint, previous answer, new answer, admin, score before/after, timestamp). That table has no write policy and rejects `UPDATE`/`DELETE`, so the trail cannot be rewritten.
 6. A paper the marker cannot score (no answer key) keeps its existing status instead of being promoted to `graded`.
 
+### What the dialog is built from
+
+`submissions.breakdown` stores the **marks** — it is written by `ph_mark_answers`
+and, in older copies of that function, it carried no `options` array for a plain
+question. Rendering the editor straight from those rows produced a dialog with an
+empty choice list and a permanently disabled confirm button, which looked exactly
+like "the admin cannot change a student's answer".
+
+`buildReviewBreakdown()` (in `src/lib/grading.js`) closes that gap in the
+application, so the editor works on every deployment regardless of how complete
+its stored breakdowns are:
+
+- each row is matched to its question **by stable id** (position only as a legacy
+  fallback) and re-attached its option list, key letter and `hasKey`;
+- the marks themselves are never rewritten — `isCorrect`, `earnedPoints` and the
+  student's answer stay exactly as the database wrote them;
+- a paper whose stored rows carry no subpoint detail (graded before subpoints
+  existed) is rendered from the freshly derived breakdown instead;
+- an item that genuinely has no options (free text) is edited with a text field,
+  and an item without a key warns that the score will not change — neither
+  dead-ends in an empty dialog.
+
+Re-applying `homework-subpoints.sql` is still worthwhile because it makes the
+stored breakdowns self-contained for every other reader (reports, exports, direct
+SQL), and it is followed by a check in `migration-groups-and-admin-editing.sql`
+that reports a stale marker.
+
+A submission is always reviewable once the row exists, even when the student left
+every question blank: supplying a missing answer is an admin action like any
+other, and the same RPC handles it (`previous_answer` is recorded as blank).
+
+### The score ceiling never vetoes a re-grade
+
+`validate_grade_bounds` refuses a score above the assignment's maximum — that is
+the point: it stops a client from posting a grade. What it must not do is veto a
+number the marker itself produced. An entry created before `assignments.total_points`
+existed can still advertise `max_score: 10` while its answer key is worth 12, and
+the write then failed with `Score 12.00 exceeds maximum 10.00` — the admin pressed
+"Confirm Change", nothing happened, and the answer looked unchangeable. The bound is
+therefore taken from the widest of `assignments.total_points`,
+`assignments.max_score` and the row's own `total_points` (all written by the marker
+in the same statement), and a write performed under the marker's
+`physics_hub.autograde` bypass — the same flag the anti-cheat trigger already
+honours — is not re-checked at all. A student still cannot use either path:
+`guard_submission_grading` restores the stored score before this trigger runs.
+The same rule lets a teacher save a manual grade above a stale maximum.
+
+`schema.sql` holds the canonical copy; `migration-groups-and-admin-editing.sql`
+carries a byte-identical one so a single migration repairs a live project, and a
+security check compares the two so they cannot drift.
+
+### Which submissions can be edited
+
+Only `public.submissions` rows — the unified homework entries the students answer
+through `/homework`. Legacy **lesson** homework submissions (`homework_submissions`,
+the model-answer flow in the "Lesson gating" tab) remain read-only: the admin sees
+the student's answers next to the key, and corrects the key or regrades with
+`regrade_lesson_homework(uuid)` instead. There is deliberately no second,
+weaker editing path for them.
+
 ## Regrading
 
 Administrators use `regrade_assignment(uuid)` or `regrade_lesson_homework(uuid)`. The UI calls one set-based RPC rather than one write per student.
@@ -92,6 +152,15 @@ homework-grading.sql
 migration-features.sql
 homework-subpoints.sql
 bulk-messaging.sql
+migration-groups-and-admin-editing.sql
 ```
+
+Every file is `CREATE OR REPLACE` / `IF NOT EXISTS`, so re-applying one in place
+is the documented repair for a drifted database — including for grading:
+`homework-subpoints.sql` refreshes the marker (its breakdown rows now carry each
+question's `options`), and `migration-groups-and-admin-editing.sql` re-asserts the
+function and audit-table grants and installs the corrected score bound. Neither is
+required for the admin answer editor to work: the UI re-derives what it needs from
+the live question definitions.
 
 Then run `npm test` locally — it covers the JS marker, the security invariants, the mounted UI in Arabic and English, and (when `embedded-postgres` is installed) the migrations and RPCs against a live PostgreSQL. See `docs/OPERATIONS.md` for the live homework/RLS checks.

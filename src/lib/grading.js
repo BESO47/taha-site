@@ -611,6 +611,116 @@ export function gradeSubmissionAgainstKey({
   }
 }
 
+/**
+ * ================== ADMIN REVIEW: BREAKDOWN SELECTION ==================
+ * The admin answer editor needs, for every item, the list of OPTIONS and
+ * the real answer key. A breakdown that was computed by the browser has
+ * both; a breakdown that was STORED BY THE DATABASE does not:
+ * `ph_mark_answers` writes the marks per question and deliberately does
+ * not repeat the option text into every row.
+ *
+ * Rendering the editor straight from stored rows therefore produced a
+ * dialog with NO options to pick — the "Edit Answer" button existed but
+ * could never be confirmed, i.e. an admin could not change a submitted
+ * answer at all.
+ *
+ * This function fixes both problems in one place:
+ *
+ *   1. it chooses the stored rows when they are detailed enough, and falls
+ *      back to the freshly derived breakdown for any question whose
+ *      subpoint detail is missing (papers graded before subpoints existed),
+ *   2. it re-attaches the definition-derived display fields (options, key
+ *      letter, key text, hasKey, roman label) to every row, matching by
+ *      STABLE ID first and by question number only as a legacy fallback.
+ *
+ * It never touches the marks themselves — `isCorrect`, `earnedPoints`,
+ * `studentAnswer`, `studentLetter` stay exactly as the database wrote them,
+ * so the numbers the admin sees remain the server's numbers.
+ *
+ * Input rows are never mutated; the returned rows are fresh objects.
+ *
+ * @param {object} input
+ * @param {Array|null} input.stored    `submission.breakdown` as saved by the DB
+ * @param {Array} input.derived        breakdown from `gradeSubmissionAgainstKey`
+ * @param {Array} input.questions      the entry's question definitions (with keys)
+ * @returns {Array} one row per question, ready to render and to edit from
+ */
+export function buildReviewBreakdown({ stored = null, derived = [], questions = [] } = {}) {
+  const key = (Array.isArray(questions) ? questions : []).map(normalizeQuestion)
+  const byId = new Map(key.map((q) => [String(q.id), q]))
+  const byNumber = new Map(key.map((q) => [String(q.number), q]))
+  const defFor = (row) => byId.get(String(row?.questionId ?? ''))
+    || byNumber.get(String(row?.number ?? ''))
+    || null
+
+  // Use the stored rows only when every question that HAS subpoints also
+  // carries one row per subpoint; otherwise the derived breakdown is the
+  // only one that can show (and edit) the subpoints at all.
+  const storedRows = Array.isArray(stored) && stored.length ? stored : null
+  const storedIsDetailed = Boolean(storedRows) && storedRows.every((row) => {
+    const def = defFor(row)
+    if (!def?.subpoints?.length) return true
+    return Array.isArray(row.subpoints) && row.subpoints.length === def.subpoints.length
+  })
+
+  const rows = (storedIsDetailed ? storedRows : (Array.isArray(derived) ? derived : [])) || []
+
+  return rows.map((row) => {
+    if (!row || typeof row !== 'object') return row
+    const def = defFor(row)
+    if (!def) return { ...row }
+
+    const out = {
+      ...row,
+      questionId: row.questionId ?? def.id,
+      number: row.number ?? def.number,
+      // Marks (`earnedPoints`, `isCorrect`, `studentAnswer`, `studentLetter`)
+      // are intentionally left exactly as they arrived.
+      question: row.question || def.question || '',
+      options: Array.isArray(row.options) && row.options.length ? row.options : def.options || [],
+      points: row.points ?? def.points,
+      hasKey: row.hasKey ?? hasKey(def),
+      hasSubpoints: Boolean(def.hasSubpoints),
+      correctLetter: row.correctLetter || def.correctLetter || '',
+      correctAnswer: row.correctAnswer || def.correctLetter || def.correctText || '',
+    }
+
+    if (!def.hasSubpoints) {
+      out.subpoints = Array.isArray(row.subpoints) ? row.subpoints : []
+      return out
+    }
+
+    const spById = new Map(def.subpoints.map((sp) => [String(sp.id), sp]))
+    const spByLabel = new Map(def.subpoints.map((sp) => [String(sp.label), sp]))
+    const spByNumber = new Map(def.subpoints.map((sp) => [String(sp.number), sp]))
+
+    out.subpoints = (Array.isArray(row.subpoints) ? row.subpoints : []).map((sp) => {
+      if (!sp || typeof sp !== 'object') return sp
+      const sd = spById.get(String(sp.subpointId ?? ''))
+        || spByLabel.get(String(sp.label ?? ''))
+        || spByNumber.get(String(sp.number ?? ''))
+        || null
+      if (!sd) return { ...sp }
+      return {
+        ...sp,
+        subpointId: sp.subpointId ?? sd.id,
+        label: sp.label || sd.label,
+        number: sp.number ?? sd.number,
+        question: sp.question || sd.question || '',
+        options: Array.isArray(sp.options) && sp.options.length ? sp.options : sd.options || [],
+        points: sp.points ?? sd.points,
+        hasKey: sp.hasKey ?? hasKey(sd),
+        correctLetter: sp.correctLetter || sd.correctLetter || '',
+        correctAnswer: sp.correctAnswer || sd.correctLetter || sd.correctText || '',
+      }
+    })
+
+    // A parent row must never look editable: only its subpoints are.
+    out.options = []
+    return out
+  })
+}
+
 /** Short label helper: "7 / 10 (70%)". */
 /**
  * Roll a list of graded submissions up into class-level statistics.

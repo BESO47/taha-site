@@ -17,6 +17,7 @@ import {
 } from '../../lib/api'
 import {
   gradeSubmissionAgainstKey, summarizeGrades, romanNumeral, OPTION_LETTERS,
+  buildReviewBreakdown,
 } from '../../lib/grading'
 import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 
@@ -414,22 +415,21 @@ export default function HomeworkTab() {
   /**
    * Open one student's paper. The breakdown is re-derived from the answer
    * key here (admins hold the key) so a paper stored before nested
-   * subpoints existed still shows per-subpoint detail.
+   * subpoints existed still shows per-subpoint detail, and so every row
+   * carries the OPTIONS + key that the answer editor needs — the stored
+   * `submissions.breakdown` only holds the marks.
    */
   const openReview = async (student, sub) => {
+    const questions = viewingEntry?.questions || []
     const derived = gradeSubmissionAgainstKey({
-      questions: viewingEntry?.questions || [],
+      questions,
       answers: sub.answers || {},
     })
     const stored = Array.isArray(sub.breakdown) && sub.breakdown.length ? sub.breakdown : null
     setReviewSub({
       student,
       sub,
-      // Prefer the stored server breakdown, but fall back to a freshly
-      // derived one whenever it does not carry subpoint detail yet.
-      breakdown: stored && stored.every((b) => !b.hasSubpoints || b.subpoints?.length)
-        ? stored
-        : derived.breakdown,
+      breakdown: buildReviewBreakdown({ stored, derived: derived.breakdown, questions }),
     })
     setAuditRows([])
     setShowAudit(false)
@@ -462,8 +462,9 @@ export default function HomeworkTab() {
    * refreshed from the server's response, never updated optimistically.
    */
   const handleConfirmEditAnswer = async () => {
-    if (!editAnswer || !editChoice) return
-    if (editChoice === editAnswer.currentAnswer) {
+    const next = String(editChoice ?? '').trim()
+    if (!editAnswer || !next) return
+    if (next === String(editAnswer.currentAnswer ?? '').trim()) {
       setEditError(lang === 'ar' ? 'الإجابة الجديدة مطابقة للحالية.' : 'The new answer is the same as the current one.')
       return
     }
@@ -475,7 +476,7 @@ export default function HomeworkTab() {
         submissionId: editAnswer.sub.id,
         questionId: editAnswer.questionId,
         subpointId: editAnswer.subpointId || null,
-        answer: editChoice,
+        answer: next,
       })
       setGradeMsg(lang === 'ar' ? 'تم تغيير الإجابة وإعادة التصحيح.' : 'Answer changed and the paper was re-graded.')
       setTimeout(() => setGradeMsg(''), 4000)
@@ -1450,7 +1451,7 @@ export default function HomeworkTab() {
                               </td>
                               <td className="p-3 text-end">
                                 <div className="flex items-center justify-end gap-1.5">
-                                  {sub?.hasAnswers && (
+                                  {sub?.id && (
                                     <button
                                       onClick={() => openReview(student, sub)}
                                       title={t('answerReviewTitle')}
@@ -1539,6 +1540,16 @@ export default function HomeworkTab() {
             )}
 
             <div className="space-y-3">
+              {!reviewSub.breakdown.length && (
+                <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-[11px] font-bold text-amber-700 dark:text-amber-300 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>
+                    {lang === 'ar'
+                      ? 'لا توجد أسئلة محفوظة لهذا الواجب، لذلك لا يمكن عرض إجابات الطالب أو تعديلها. أضف الأسئلة ونموذج الإجابة أولاً.'
+                      : 'This homework has no stored questions, so the answers cannot be shown or edited. Add the questions and the answer key first.'}
+                  </span>
+                </div>
+              )}
               {reviewSub.breakdown.map((b) => (
                 <div
                   key={b.questionId || b.number}
@@ -1575,27 +1586,28 @@ export default function HomeworkTab() {
                         {lang === 'ar' ? 'الصحيحة' : 'Correct'}:{' '}
                         <span className="font-mono text-emerald-600 dark:text-emerald-400">{b.correctAnswer || '—'}</span>
                       </span>
-                      {b.hasKey && (
-                        <button
-                          onClick={() => openEditAnswer({
-                            student: reviewSub.student,
-                            sub: reviewSub.sub,
-                            questionId: String(b.questionId),
-                            questionNumber: b.number,
-                            subpointId: null,
-                            label: '',
-                            question: b.question,
-                            options: b.options || [],
-                            currentAnswer: b.studentLetter || b.studentAnswer || '',
-                            correctAnswer: b.correctLetter || b.correctAnswer || '',
-                            points: b.points,
-                          })}
-                          className="shrink-0 px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[11px] font-bold inline-flex items-center gap-1.5 hover:bg-purple-100 transition"
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                          <span>{lang === 'ar' ? 'تعديل الإجابة' : 'Edit Answer'}</span>
-                        </button>
-                      )}
+                      {/* Editable even without a key: the database refuses
+                          to promote an unmarkable paper to `graded`, and the
+                          dialog says so. */}
+                      <button
+                        onClick={() => openEditAnswer({
+                          student: reviewSub.student,
+                          sub: reviewSub.sub,
+                          questionId: String(b.questionId),
+                          questionNumber: b.number,
+                          subpointId: null,
+                          label: '',
+                          question: b.question,
+                          options: b.options || [],
+                          currentAnswer: b.studentLetter || b.studentAnswer || '',
+                          correctAnswer: b.correctLetter || b.correctAnswer || '',
+                          points: b.points,
+                        })}
+                        className="shrink-0 px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[11px] font-bold inline-flex items-center gap-1.5 hover:bg-purple-100 transition"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        <span>{lang === 'ar' ? 'تعديل الإجابة' : 'Edit Answer'}</span>
+                      </button>
                     </div>
                   )}
 
@@ -1624,27 +1636,25 @@ export default function HomeworkTab() {
                               {lang === 'ar' ? 'الصحيحة' : 'Correct'}:{' '}
                               <span className="font-mono text-emerald-600 dark:text-emerald-400">{sp.correctAnswer || '—'}</span>
                             </span>
-                            {sp.hasKey && (
-                              <button
-                                onClick={() => openEditAnswer({
-                                  student: reviewSub.student,
-                                  sub: reviewSub.sub,
-                                  questionId: String(b.questionId),
-                                  questionNumber: b.number,
-                                  subpointId: String(sp.subpointId),
-                                  label: sp.label || romanNumeral(sp.number),
-                                  question: sp.question,
-                                  options: sp.options || [],
-                                  currentAnswer: sp.studentLetter || sp.studentAnswer || '',
-                                  correctAnswer: sp.correctLetter || sp.correctAnswer || '',
-                                  points: sp.points,
-                                })}
-                                className="shrink-0 px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[11px] font-bold inline-flex items-center gap-1.5 hover:bg-purple-100 transition"
-                              >
-                                <Pencil className="w-3.5 h-3.5" />
-                                <span>{lang === 'ar' ? 'تعديل الإجابة' : 'Edit Answer'}</span>
-                              </button>
-                            )}
+                            <button
+                              onClick={() => openEditAnswer({
+                                student: reviewSub.student,
+                                sub: reviewSub.sub,
+                                questionId: String(b.questionId),
+                                questionNumber: b.number,
+                                subpointId: String(sp.subpointId),
+                                label: sp.label || romanNumeral(sp.number),
+                                question: sp.question,
+                                options: sp.options || [],
+                                currentAnswer: sp.studentLetter || sp.studentAnswer || '',
+                                correctAnswer: sp.correctLetter || sp.correctAnswer || '',
+                                points: sp.points,
+                              })}
+                              className="shrink-0 px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[11px] font-bold inline-flex items-center gap-1.5 hover:bg-purple-100 transition"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                              <span>{lang === 'ar' ? 'تعديل الإجابة' : 'Edit Answer'}</span>
+                            </button>
                           </div>
                         </li>
                       ))}
@@ -1702,28 +1712,62 @@ export default function HomeworkTab() {
 
             <p className="text-[11px] font-bold text-slate-500">{editAnswer.question}</p>
 
+            {!editAnswer.correctAnswer && (
+              <p className="p-2.5 rounded-lg bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-zinc-800 text-[11px] font-bold text-slate-600 dark:text-zinc-300 flex items-start gap-2">
+                <Key className="w-4 h-4 shrink-0 mt-0.5 text-slate-400" />
+                <span>
+                  {lang === 'ar'
+                    ? 'لا يوجد نموذج إجابة لهذا السؤال، لذا لن تتغير الدرجة بعد التعديل.'
+                    : 'This item has no answer key, so the score will not change after the edit.'}
+                </span>
+              </p>
+            )}
+
             {!confirmEdit ? (
               <>
-                <div className="grid grid-cols-1 gap-1.5">
-                  {(editAnswer.options || []).map((opt, oi) => {
-                    const letter = OPTION_LETTERS[oi]
-                    const selected = editChoice === letter
-                    return (
-                      <button
-                        key={oi}
-                        type="button"
-                        onClick={() => { setEditChoice(letter); setEditError('') }}
-                        className={`px-3 py-2.5 rounded-xl text-xs font-bold border text-start transition ${
-                          selected
-                            ? 'bg-purple-500 border-purple-600 text-white'
-                            : 'bg-slate-50 dark:bg-black/40 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:border-purple-400/60'
-                        }`}
-                      >
-                        <span className="font-mono" dir="ltr">{letter})</span> {String(opt ?? '').replace(/^[A-F]\s*[).:\-–]\s*/, '')}
-                      </button>
-                    )
-                  })}
-                </div>
+                {(editAnswer.options || []).length ? (
+                  <div className="grid grid-cols-1 gap-1.5">
+                    {(editAnswer.options || []).map((opt, oi) => {
+                      const letter = OPTION_LETTERS[oi]
+                      const selected = editChoice === letter
+                      return (
+                        <button
+                          key={oi}
+                          type="button"
+                          onClick={() => { setEditChoice(letter); setEditError('') }}
+                          className={`px-3 py-2.5 rounded-xl text-xs font-bold border text-start transition ${
+                            selected
+                              ? 'bg-purple-500 border-purple-600 text-white'
+                              : 'bg-slate-50 dark:bg-black/40 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:border-purple-400/60'
+                          }`}
+                        >
+                          <span className="font-mono" dir="ltr">{letter})</span> {String(opt ?? '').replace(/^[A-F]\s*[).:\-–]\s*/, '')}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  // A question with no options is a free-text item: the
+                  // database accepts and normalizes the text itself, so the
+                  // admin must not be stranded with an empty choice list.
+                  <label className="block space-y-1.5">
+                    <span className="block text-[11px] font-bold text-slate-500">
+                      {lang === 'ar' ? 'الإجابة الجديدة' : 'New answer'}
+                    </span>
+                    <input
+                      type="text"
+                      value={editChoice}
+                      onChange={(e) => { setEditChoice(e.target.value); setEditError('') }}
+                      placeholder={lang === 'ar' ? 'اكتب إجابة الطالب' : "Type the student's answer"}
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-black text-xs font-bold"
+                    />
+                    <span className="block text-[10px] text-slate-400">
+                      {lang === 'ar'
+                        ? 'تُقرأ هذه الإجابة كنص وتُقارن بنموذج الإجابة بعد التطبيع.'
+                        : 'This answer is stored as text and compared with the key after normalization.'}
+                    </span>
+                  </label>
+                )}
 
                 {editError && (
                   <p className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-[11px] font-bold">
@@ -1734,7 +1778,7 @@ export default function HomeworkTab() {
                 <div className="flex gap-2 pt-1">
                   <button
                     onClick={() => setConfirmEdit(true)}
-                    disabled={!editChoice || editChoice === editAnswer.currentAnswer}
+                    disabled={!String(editChoice || '').trim() || String(editChoice).trim() === String(editAnswer.currentAnswer || '').trim()}
                     className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-extrabold text-xs"
                   >
                     {lang === 'ar' ? 'متابعة' : 'Continue'}
