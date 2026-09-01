@@ -356,6 +356,116 @@ try {
   })
 
 
+  /* ------------- ADMIN: change ONE submitted answer (regression) -------------
+   * `ph_mark_answers` writes MARKS only into `submissions.breakdown` — it does
+   * not repeat the option list of a plain question. Rendered naively, that
+   * stored row gave the "Edit Answer" dialog nothing to choose from and its
+   * confirm button stayed disabled: an admin could not change a submitted
+   * answer at all. The dialog must therefore be driven by the live question
+   * definitions, whatever the database happened to store.
+   */
+  const ADMIN_ENTRY = {
+    id: 'hw-edit',
+    title: 'Editable homework',
+    year_id: '5',
+    total_points: 10,
+    max_score: 10,
+    is_published: true,
+    group_name: '',
+    questions: [
+      { id: 'q1', question: 'SI unit of current?', options: ['A) Ampere', 'B) Volt', 'C) Ohm', 'D) Joule'], answer: 'A', points: 5 },
+      { id: 'q2', question: 'Unit of resistance?', options: ['A) Ampere', 'B) Volt', 'C) Ohm', 'D) Joule'], answer: 'C', points: 5 },
+    ],
+  }
+  const ADMIN_STUDENT = {
+    id: 'stu-edit', full_name: 'Editable Student', phone: '01000000009', parent_phone: '',
+    year_id: '5', group_name: '', governorate: 'Cairo', is_active: true, role: 'student',
+  }
+  /** A graded row exactly as the database stores it — no `options` anywhere. */
+  const ADMIN_SUB = {
+    id: 'sub-edit-1', assignment_id: 'hw-edit', student_id: 'stu-edit', status: 'graded',
+    answers: { q1: 'B', q2: 'D' }, score: 0, total_points: 10, correct_count: 0,
+    incorrect_count: 2, unanswered_count: 0, percentage: 0,
+    breakdown: [
+      { questionId: 'q1', number: 1, question: 'SI unit of current?', points: 5, hasKey: true, hasSubpoints: false,
+        answered: true, studentAnswer: 'B', studentLetter: 'B', correctAnswer: 'A', isCorrect: false, earnedPoints: 0, subpoints: [] },
+      { questionId: 'q2', number: 2, question: 'Unit of resistance?', points: 5, hasKey: true, hasSubpoints: false,
+        answered: true, studentAnswer: 'D', studentLetter: 'D', correctAnswer: 'C', isCorrect: false, earnedPoints: 0, subpoints: [] },
+    ],
+    feedback: '', submitted_at: new Date().toISOString(),
+  }
+
+  const EDIT_LABELS = {
+    en: { grading: 'Submissions & Grading', review: 'Answer Review', edit: 'Edit Answer', cont: 'Continue' },
+    ar: { grading: 'التسليمات والتصحيح', review: 'مراجعة الإجابات', edit: 'تعديل الإجابة', cont: 'متابعة' },
+  }
+  const seedAdminEdit = (subs) => {
+    localStorage.setItem('physics_hub_homework_entries', JSON.stringify([ADMIN_ENTRY]))
+    localStorage.setItem('physics_hub_hw_grades', JSON.stringify({ 'hw-edit': subs }))
+    localStorage.setItem('physics_hub_sample_students', JSON.stringify([ADMIN_STUDENT]))
+  }
+  const letterButtons = (root) =>
+    Array.from(root.querySelectorAll('button')).filter((b) => /^[A-F]\)\s/.test(b.textContent.trim()))
+
+  for (const lang of ['en', 'ar']) {
+    await check(`[${lang}] the editor offers every option of a question stored by the database`, async () => {
+      seedAdminEdit([ADMIN_SUB])
+      const L = EDIT_LABELS[lang]
+      const container = await mount(React.createElement(HomeworkTab), lang)
+      await flush()
+      await flush()
+
+      await click(byText(container, 'button', L.grading))
+      const eye = Array.from(container.querySelectorAll('button')).find((b) => b.title === L.review)
+      assert.ok(eye, 'a submitted paper can be opened for review')
+      await click(eye)
+
+      const edits = Array.from(container.querySelectorAll('button')).filter((b) => b.textContent.includes(L.edit))
+      assert.equal(edits.length, 2, 'one editor per question of the paper')
+
+      await click(edits[0])
+      const dialog = container.querySelector('[class*="z-[70]"]')
+      assert.ok(dialog, 'the edit dialog is open')
+      const options = letterButtons(dialog)
+      assert.equal(options.length, 4, 'the four options of the question are listed')
+      assert.ok(dialog.textContent.includes('Ampere'), 'the option texts come from the real question')
+
+      const continueBtn = () => Array.from(dialog.querySelectorAll('button'))
+        .find((b) => b.textContent.trim() === L.cont)
+      assert.ok(continueBtn().disabled, 'nothing can be confirmed before a choice is made')
+
+      await click(options[1]) // B — exactly what the student already wrote
+      assert.ok(continueBtn().disabled, 're-submitting the same answer is not a change')
+
+      await click(options[0]) // A
+      assert.equal(continueBtn().disabled, false, 'a different answer unlocks the confirmation step')
+
+      // The marks shown in the review come from the database, not from here.
+      assert.ok(container.textContent.includes('0 / 10'), 'the stored score is displayed untouched')
+    })
+  }
+
+  await check('a paper with no recorded answers can still be opened and corrected', async () => {
+    seedAdminEdit([{
+      ...ADMIN_SUB, id: 'sub-edit-2', answers: {}, breakdown: [], score: null,
+      correct_count: null, incorrect_count: null, percentage: null, status: 'submitted',
+    }])
+    const L = EDIT_LABELS.en
+    const container = await mount(React.createElement(HomeworkTab), 'en')
+    await flush()
+    await flush()
+
+    await click(byText(container, 'button', L.grading))
+    const eye = Array.from(container.querySelectorAll('button')).find((b) => b.title === L.review)
+    assert.ok(eye, 'an unanswered paper is not hidden from the reviewer')
+    await click(eye)
+    const edits = Array.from(container.querySelectorAll('button')).filter((b) => b.textContent.includes(L.edit))
+    assert.equal(edits.length, 2, 'a missing answer can be given, question by question')
+    await click(edits[0])
+    assert.equal(letterButtons(container.querySelector('[class*="z-[70]"]')).length, 4)
+  })
+
+
   /* ---------------- REGISTRATION: grade -> group selector ------------ */
   const { default: RegisterPage } = await vite.ssrLoadModule('/src/pages/RegisterPage.jsx')
 

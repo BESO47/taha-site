@@ -39,6 +39,19 @@
 --     re-asserts its privileges + the audit table privileges, which is
 --     what a partially-applied database is usually missing.
 --
+--   BUG 4 — the editor opened with NOTHING to choose. `ph_mark_answers`
+--     stored a plain question's MARKS only — its breakdown row had no
+--     `options` array — and the admin review screen built the "Edit
+--     Answer" choice list from exactly that row. The dialog was therefore
+--     empty and its confirm button stayed disabled forever, which reads to
+--     a teacher as "I cannot change a student's answer".
+--     The application side is fixed in src/lib/grading.js
+--     (`buildReviewBreakdown`), which re-attaches the options from the live
+--     question definitions, so NO data migration is required here. Section
+--     6b below merely reports a marker that predates the fix; re-running
+--     homework-subpoints.sql refreshes it so stored breakdowns become
+--     self-contained for every other reader.
+--
 -- HOW TO RUN
 --   Supabase Dashboard -> SQL Editor -> New query -> paste -> Run.
 --
@@ -418,6 +431,32 @@ BEGIN
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO authenticated', fn);
     END IF;
   END LOOP;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- 6b. IS THE MARKER NEW ENOUGH TO DRIVE THE ANSWER EDITOR?
+-- ---------------------------------------------------------------------
+-- The admin "Edit Answer" dialog lists the options of the question it is
+-- about to change. Those options come from `submissions.breakdown`, which
+-- the marker writes. `ph_mark_answers` in older copies of
+-- homework-subpoints.sql emitted the MARKS only, with no `options` key,
+-- and the dialog therefore opened with an empty list and a permanently
+-- disabled confirm button.
+--
+-- The application no longer depends on that: `buildReviewBreakdown()`
+-- re-attaches the options from the live question definitions, so editing
+-- works even on a database that has never seen this change. Re-running
+-- homework-subpoints.sql is still recommended so the stored breakdowns are
+-- self-contained for every other reader (exports, reports, SQL queries).
+DO $$
+BEGIN
+  IF (
+    SELECT position('''options''' IN prosrc) > 0
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = 'ph_mark_answers' AND p.pronargs = 2
+  ) IS NOT TRUE THEN
+    RAISE NOTICE 'public.ph_mark_answers does not emit `options` in its breakdown — re-run homework-subpoints.sql to refresh the marker (the admin editor works anyway, but stored breakdowns stay less complete).';
+  END IF;
 END $$;
 
 -- =====================================================================

@@ -284,6 +284,37 @@ try {
     assert.equal(r.breakdown[0].hasSubpoints, false)
   })
 
+  await check('a stored flat breakdown carries the options the answer editor lists', async () => {
+    // The admin "Edit Answer" dialog builds its choice list from the stored
+    // breakdown. A row without `options` used to open an EMPTY dialog whose
+    // confirm button could never be pressed, so an admin could not change a
+    // submitted answer at all. The marks must therefore travel together with
+    // the option list and the canonical key letter.
+    const { rows: [r] } = await client.query(
+      `SELECT * FROM public.ph_mark_answers($1::jsonb, $2::jsonb)`,
+      [JSON.stringify(LEGACY), JSON.stringify({ q1: 'A', q2: 'A' })]
+    )
+    const row = r.breakdown[0]
+    assert.deepEqual(row.options, ['A) Ampere', 'B) Volt'], 'options are stored with the mark')
+    assert.equal(row.correctLetter, 'A', 'the key letter is stored, not only its text')
+    assert.equal(row.studentLetter, 'A')
+    assert.equal(row.hasKey, true)
+    assert.equal(r.breakdown[1].correctLetter, 'B')
+    assert.equal(r.breakdown[1].isCorrect, false, 'q2 was answered A while the key is B')
+  })
+
+  await check('a key-less flat row still reports options so the editor is usable', async () => {
+    const KEYLESS = [{ id: 'q1', question: 'Explain', options: ['A) x', 'B) y'], answer: '', points: 2 }]
+    const { rows: [r] } = await client.query(
+      `SELECT * FROM public.ph_mark_answers($1::jsonb, $2::jsonb)`,
+      [JSON.stringify(KEYLESS), JSON.stringify({ q1: 'x' })]
+    )
+    assert.equal(r.breakdown[0].hasKey, false)
+    assert.equal(r.breakdown[0].correctLetter, null, 'no key is invented for a key-less item')
+    assert.equal(r.breakdown[0].options.length, 2, 'the item is still fully described')
+    assert.equal(Number(r.total_points), 0, 'and nothing is scored')
+  })
+
   /* ---------- 4. answer-key protection ------------------------------- */
   await check('strip_assessment_answers hides subpoint keys from students', async () => {
     const { rows: [r] } = await client.query(
@@ -503,6 +534,41 @@ try {
     )
     assert.equal(r.res.status, 'submitted', 'no answer key -> still "submitted"')
     assert.equal(r.res.new_answer, 'Teacher note')
+    await actingAs(client, null, null)()
+  })
+
+  /* ---------- 7b. a blank answer can be FILLED IN -------------------- */
+  await check('an admin can supply an answer the student never gave', async () => {
+    // The review screen must therefore open for an unanswered paper too:
+    // a missing answer is exactly the kind of thing this RPC fixes.
+    await actingAs(client, STU_A, 'authenticated')()
+    await client.query(
+      `INSERT INTO public.submissions (assignment_id, student_id, answers, status)
+       VALUES ($1,$2,$3::jsonb,'submitted')`,
+      [LEGACY_ASSIGNMENT, STU_A, JSON.stringify({ q1: 'A' })]
+    )
+    const { rows: [sub] } = await client.query(
+      `SELECT id FROM public.submissions WHERE assignment_id = $1 AND student_id = $2`,
+      [LEGACY_ASSIGNMENT, STU_A]
+    )
+    await actingAs(client, null, null)()
+
+    await actingAs(client, ADMIN, 'authenticated')()
+    const { rows: [r] } = await client.query(
+      `SELECT public.admin_update_submission_answer($1,'q2',NULL,'B') AS res`, [sub.id]
+    )
+    assert.equal(r.res.ok, true, 'a missing answer is one the admin may write')
+    assert.equal(r.res.previous_answer, null, 'there was nothing there before')
+    assert.equal(r.res.new_answer, 'B')
+    assert.equal(Number(r.res.score), 10, 'both questions now count (5 + 5)')
+    assert.equal(Number(r.res.correct_count), 2)
+
+    const { rows: [audit] } = await client.query(
+      `SELECT previous_answer, new_answer FROM public.submission_answer_edits WHERE submission_id = $1`,
+      [sub.id]
+    )
+    assert.equal(audit.previous_answer, null, 'the audit row records the blank as blank')
+    assert.equal(audit.new_answer, 'B')
     await actingAs(client, null, null)()
   })
 

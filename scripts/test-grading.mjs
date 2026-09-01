@@ -10,6 +10,7 @@ import {
   summarizeGrades,
   romanNumeral,
   withUpdatedAnswer,
+  buildReviewBreakdown,
 } from '../src/lib/grading.js'
 
 let passed = 0
@@ -299,6 +300,95 @@ check('legacy subpoints stored under `text` are still read', () => {
   assert.equal(r.correctCount, 1)
   assert.equal(r.earnedPoints, 2)
   assert.equal(r.breakdown[0].subpoints[0].question, 'Legacy field name')
+})
+
+/* ================== ADMIN REVIEW BREAKDOWN (hydration) ==================
+ * `ph_mark_answers` stores per-question MARKS only — no option list. The
+ * admin answer editor builds its choice list from the breakdown it is
+ * given, so a stored row had to be repaired against the live question
+ * definitions. Without that repair the "Edit Answer" dialog opened empty
+ * and its confirm button could never be pressed.
+ */
+
+/** Verbatim shape of a `submissions.breakdown` written by the database. */
+const SQL_STORED = [
+  {
+    questionId: 'q1', number: 1, question: 'SI unit of current?', points: 5,
+    hasKey: true, hasSubpoints: false, answered: true, studentAnswer: 'B', studentLetter: 'B',
+    correctAnswer: 'A', isCorrect: false, earnedPoints: 0, subpoints: [],
+  },
+  {
+    questionId: 'q2', number: 2, question: 'SI unit of resistance?', points: 5,
+    hasKey: true, hasSubpoints: false, answered: true, studentAnswer: 'C', studentLetter: 'C',
+    correctAnswer: 'C', isCorrect: true, earnedPoints: 5, subpoints: [],
+  },
+]
+
+check('a stored SQL breakdown gains the options the answer editor needs', () => {
+  const rows = buildReviewBreakdown({ stored: SQL_STORED, derived: [], questions })
+  assert.equal(rows.length, 2)
+  assert.deepEqual(rows[0].options, ['A) Ampere', 'B) Volt', 'C) Ohm', 'D) Joule'],
+    'options are re-attached from the question definition')
+  assert.equal(rows[0].hasSubpoints, false)
+  assert.ok(rows.every((r) => (r.options || []).length === 4), 'every question is editable')
+})
+
+check('hydration never rewrites the marks the database computed', () => {
+  const rows = buildReviewBreakdown({ stored: SQL_STORED, derived: [], questions })
+  assert.equal(rows[0].isCorrect, false, 'the wrong answer stays wrong')
+  assert.equal(rows[0].earnedPoints, 0)
+  assert.equal(rows[0].studentAnswer, 'B', "the student's own answer is untouched")
+  assert.equal(rows[0].studentLetter, 'B')
+  assert.equal(rows[1].earnedPoints, 5)
+  assert.equal(rows[0].correctLetter, 'A', 'the key letter is recovered for highlighting')
+})
+
+check('a stored row for a question that has no key stays unmarkable', () => {
+  const keyless = [{ questionId: 'q9', number: 1, question: 'Explain', points: 3, hasKey: false,
+    answered: true, studentAnswer: 'because', isCorrect: false, earnedPoints: 0 }]
+  const rows = buildReviewBreakdown({ stored: keyless, derived: [], questions: [{ id: 'q9', question: 'Explain', points: 3 }] })
+  assert.equal(rows[0].hasKey, false)
+  assert.deepEqual(rows[0].options, [], 'a text item has no options to pick from')
+})
+
+check('papers graded before subpoints existed fall back to the derived rows', () => {
+  const nested = [{
+    id: 'n1', question: 'Choose for each', points: 99,
+    subpoints: [
+      { id: 'a', question: 'First?', options: ['A) w', 'B) x', 'C) y', 'D) z'], answer: 'B', points: 1 },
+      { id: 'b', question: 'Second?', options: ['A) w', 'B) x', 'C) y', 'D) z'], answer: 'C', points: 1 },
+    ],
+  }]
+  // The old marker stored a single flat row: no subpoint detail at all.
+  const stale = [{ questionId: 'n1', number: 1, question: 'Choose for each', points: 2,
+    hasKey: true, answered: true, studentAnswer: '', isCorrect: false, earnedPoints: 0 }]
+  const derived = gradeSubmissionAgainstKey({ questions: nested, answers: { n1: { subpoints: { a: 'B', b: 'C' } } } })
+  const rows = buildReviewBreakdown({ stored: stale, derived: derived.breakdown, questions: nested })
+  assert.equal(rows[0].hasSubpoints, true, 'the parent is rendered as a subpoint group')
+  assert.equal(rows[0].subpoints.length, 2, 'the subpoint rows come from the derived breakdown')
+  assert.ok(rows[0].subpoints.every((sp) => sp.options.length === 4), 'every subpoint is editable')
+})
+
+check('legacy positional question ids resolve to the right definition', () => {
+  const positional = [{ questionId: '2', number: 2, question: '', points: 5, hasKey: true,
+    answered: true, studentAnswer: 'C', isCorrect: true, earnedPoints: 5 }]
+  const rows = buildReviewBreakdown({ stored: positional, derived: [], questions })
+  assert.deepEqual(rows[0].options, questions[1].options, 'position 2 is the resistance question')
+  assert.equal(rows[0].question, 'SI unit of resistance?')
+})
+
+check('unknown rows pass through untouched instead of being dropped', () => {
+  const foreign = [{ questionId: 'gone', number: 7, question: 'Deleted question', points: 1, hasKey: true,
+    answered: true, studentAnswer: 'A', isCorrect: true, earnedPoints: 1 }]
+  const rows = buildReviewBreakdown({ stored: foreign, derived: [], questions })
+  assert.equal(rows.length, 1)
+  assert.deepEqual(rows[0], foreign[0])
+})
+
+check('hydration is pure — the stored rows are not modified', () => {
+  const stored = SQL_STORED.map((r) => ({ ...r }))
+  buildReviewBreakdown({ stored, derived: [], questions })
+  assert.deepEqual(stored, SQL_STORED, 'the input breakdown is untouched')
 })
 
 console.log(`\n${passed} checks passed\n`)

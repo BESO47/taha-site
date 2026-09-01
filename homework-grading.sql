@@ -221,9 +221,11 @@ BEGIN
       IF NOT answered THEN unanswered_count := unanswered_count + 1; END IF;
       items := items || jsonb_build_object(
         'questionId', q_id, 'number', i, 'question', q ->> 'question',
+        'options', q_options,
         'points', q_points, 'hasKey', FALSE, 'answered', answered,
         'studentAnswer', stu_raw, 'studentLetter', stu_letter,
-        'correctAnswer', NULL, 'isCorrect', FALSE, 'earnedPoints', 0
+        'correctAnswer', NULL, 'correctLetter', NULL,
+        'isCorrect', FALSE, 'earnedPoints', 0
       );
       CONTINUE;
     END IF;
@@ -255,10 +257,11 @@ BEGIN
 
     items := items || jsonb_build_object(
       'questionId', q_id, 'number', i, 'question', q ->> 'question',
+      'options', q_options,
       'points', q_points, 'hasKey', TRUE, 'answered', answered,
       'studentAnswer', stu_raw, 'studentLetter', stu_letter,
-      'correctAnswer', COALESCE(key_letter, key_raw), 'isCorrect', correct,
-      'earnedPoints', CASE WHEN correct THEN q_points ELSE 0 END
+      'correctAnswer', COALESCE(key_letter, key_raw), 'correctLetter', key_letter,
+      'isCorrect', correct, 'earnedPoints', CASE WHEN correct THEN q_points ELSE 0 END
     );
   END LOOP;
 

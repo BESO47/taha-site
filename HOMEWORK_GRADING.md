@@ -80,6 +80,46 @@ Legacy flat subpoint keys written by earlier builds (`"q2.sp_a"`) are still read
 5. Appends a row to `submission_answer_edits` (student, submission, question, subpoint, previous answer, new answer, admin, score before/after, timestamp). That table has no write policy and rejects `UPDATE`/`DELETE`, so the trail cannot be rewritten.
 6. A paper the marker cannot score (no answer key) keeps its existing status instead of being promoted to `graded`.
 
+### What the dialog is built from
+
+`submissions.breakdown` stores the **marks** — it is written by `ph_mark_answers`
+and, in older copies of that function, it carried no `options` array for a plain
+question. Rendering the editor straight from those rows produced a dialog with an
+empty choice list and a permanently disabled confirm button, which looked exactly
+like "the admin cannot change a student's answer".
+
+`buildReviewBreakdown()` (in `src/lib/grading.js`) closes that gap in the
+application, so the editor works on every deployment regardless of how complete
+its stored breakdowns are:
+
+- each row is matched to its question **by stable id** (position only as a legacy
+  fallback) and re-attached its option list, key letter and `hasKey`;
+- the marks themselves are never rewritten — `isCorrect`, `earnedPoints` and the
+  student's answer stay exactly as the database wrote them;
+- a paper whose stored rows carry no subpoint detail (graded before subpoints
+  existed) is rendered from the freshly derived breakdown instead;
+- an item that genuinely has no options (free text) is edited with a text field,
+  and an item without a key warns that the score will not change — neither
+  dead-ends in an empty dialog.
+
+Re-applying `homework-subpoints.sql` is still worthwhile because it makes the
+stored breakdowns self-contained for every other reader (reports, exports, direct
+SQL), and it is followed by a check in `migration-groups-and-admin-editing.sql`
+that reports a stale marker.
+
+A submission is always reviewable once the row exists, even when the student left
+every question blank: supplying a missing answer is an admin action like any
+other, and the same RPC handles it (`previous_answer` is recorded as blank).
+
+### Which submissions can be edited
+
+Only `public.submissions` rows — the unified homework entries the students answer
+through `/homework`. Legacy **lesson** homework submissions (`homework_submissions`,
+the model-answer flow in the "Lesson gating" tab) remain read-only: the admin sees
+the student's answers next to the key, and corrects the key or regrades with
+`regrade_lesson_homework(uuid)` instead. There is deliberately no second,
+weaker editing path for them.
+
 ## Regrading
 
 Administrators use `regrade_assignment(uuid)` or `regrade_lesson_homework(uuid)`. The UI calls one set-based RPC rather than one write per student.
