@@ -57,6 +57,7 @@ In Supabase SQL Editor, apply the scripts in order:
 4. `migration-features.sql`
 5. `homework-subpoints.sql`
 6. `migration-groups-and-admin-editing.sql`
+7. `migration-admin-create-student.sql`
 
 ### Gateway
 
@@ -125,6 +126,8 @@ migration-features.sql    multi-group homework, admin student RPCs
 homework-subpoints.sql    nested MCQ subpoints, admin answer editing + audit
 migration-groups-and-admin-editing.sql
                           signup group loading/validation, group-name sync fix
+migration-admin-create-student.sql
+                          admin-side student account creation (auth user + profile)
 docs/                     architecture, API, database, manuals, operations
 ```
 

@@ -10,6 +10,7 @@ Apply in Supabase SQL Editor:
 4. `migration-features.sql` — multi-group homework, admin student management RPCs, attendance cancellation, paginated student listing, signup group validation.
 5. `homework-subpoints.sql` — nested MCQ subpoints, subpoint-aware marking, admin answer editing with an append-only audit trail.
 6. `migration-groups-and-admin-editing.sql` — anon-readable `list_registration_groups()` for the signup form, strict grade/group validation on every profile write, corrected `groups.name -> profiles.group_name` sync, re-asserted grants for the admin RPCs, and a working `admin_set_student_password` (pgcrypto on the function `search_path`).
+7. `migration-admin-create-student.sql` — `admin_create_student()`, the admin-only RPC behind the dashboard's **Add Student** form: it writes the `auth.users` row (bcrypt password, e-mail already confirmed) and its `auth.identities` record, then lets the existing signup trigger create the profile, so admin-created and self-registered students follow the same validated path.
 
 The scripts use `IF NOT EXISTS`, `CREATE OR REPLACE`, and policy/trigger recreation where possible, so they are safe to run more than once. Back up production before any migration and test on staging first.
 
@@ -206,6 +207,7 @@ RLS is enabled with a single `SELECT` policy for administrators. There is delibe
 - `admin_update_submission_answer(uuid, text, text, text)` — admin-only edit of one submitted answer; re-grades and audits.
 - `bulk_messaging_report(year)`, `student_progress_log(student)` — reporting RPCs.
 - `touch_updated_at()`, `stamp_grader()` — audit triggers.
+- `admin_create_student(text, text, text, text, text, text, uuid, text, boolean)` — admin-only creation of a student account: writes `auth.users` (bcrypt password, e-mail pre-confirmed) and `auth.identities`, lets the signup trigger create the profile, then applies `is_active`. Returns the profile row.
 - `admin_update_student(...)` — securely updates student profile fields including email sync with auth.users.
 - `admin_set_student_password(uuid, text)` — sets a new password for a student. Hashes with pgcrypto bcrypt (`crypt(..., gen_salt('bf', 10))`, `search_path` includes `extensions`) and writes only the hash to `auth.users.encrypted_password`.
 - `admin_initiate_password_reset(uuid)` — returns email for client-side Supabase reset flow.

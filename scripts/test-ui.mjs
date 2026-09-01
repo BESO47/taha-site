@@ -68,6 +68,21 @@ const viteGroupFailure = await createServer({
   },
 })
 
+// Same app, but `../../lib/api` (as the admin tabs import it) resolves to
+// a data layer that records adminCreateStudent() calls instead of talking
+// to Supabase — used to check the "Add Student" dialog.
+const viteAdminCreate = await createServer({
+  server: { middlewareMode: true, ws: { port: 24700 } },
+  appType: 'custom',
+  logLevel: 'error',
+  resolve: {
+    alias: [{
+      find: '../../lib/api',
+      replacement: new URL('./fixtures/api-admin-create.js', import.meta.url).pathname,
+    }],
+  },
+})
+
 const OPTIONS = ['A) Newton', 'B) Inertia', 'C) Zero net force', 'D) Friction']
 
 const NESTED_ASSIGNMENT = {
@@ -559,6 +574,156 @@ try {
 
   }
 
+  /* ================================================================
+   * ADMIN CREATES A STUDENT ACCOUNT
+   * ================================================================ */
+  {
+    const { default: StudentsTab } = await viteAdminCreate.ssrLoadModule('/src/components/admin/StudentsTab.jsx')
+    const { createCalls } = await viteAdminCreate.ssrLoadModule('/scripts/fixtures/api-admin-create.js')
+    const { LanguageProvider } = await viteAdminCreate.ssrLoadModule('/src/lib/i18n.jsx')
+
+    const mountTab = async (lang) => {
+      localStorage.setItem('app_lang', lang)
+      const container = document.createElement('div')
+      document.body.appendChild(container)
+      await act(async () => {
+        createRoot(container).render(
+          React.createElement(MemoryRouter, null,
+            React.createElement(LanguageProvider, null, React.createElement(StudentsTab, { students: [], analytics: [] })))
+        )
+      })
+      await flush()
+      await flush()
+      return container
+    }
+
+    const ADD_LABELS = {
+      en: { add: 'Add Student', create: 'Create Account' },
+      ar: { add: 'إضافة طالب', create: 'إنشاء الحساب' },
+    }
+
+    // Everything below is scoped to the dialog: the tab behind it has its
+    // own grade/group filters that would otherwise be matched.
+    const modalOf = (container) => {
+      const dialog = container.querySelector('.fixed.inset-0')
+      assert.ok(dialog, 'the Add Student dialog is open')
+      return dialog
+    }
+    const groupSelectIn = (root) =>
+      Array.from(root.querySelectorAll('select')).find((sel) =>
+        Array.from(sel.options).some((o) => o.value.startsWith('grp-'))
+      )
+    const gradeSelectIn = (root) =>
+      Array.from(root.querySelectorAll('select')).find(
+        (sel) => Array.from(sel.options).map((o) => o.value).join(',') === '5,6'
+      )
+
+    const fillCreateForm = async (container, values) => {
+      const root = modalOf(container)
+      const byLabel = (type, index) =>
+        Array.from(root.querySelectorAll(`input[type="${type}"]`))[index]
+      const set = async (input, value) => {
+        await act(async () => {
+          const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set
+          setter.call(input, value)
+          input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+        })
+      }
+      await set(byLabel('text', 0), values.fullName)
+      await set(root.querySelector('input[type="email"]'), values.email)
+      const passwords = Array.from(root.querySelectorAll('input[type="password"]'))
+      await set(passwords[0], values.password)
+      await set(passwords[1], values.confirmPassword ?? values.password)
+      const phones = Array.from(root.querySelectorAll('input[type="tel"]'))
+      await set(phones[0], values.phone)
+      await set(phones[1], values.parentPhone)
+      await flush()
+    }
+
+    for (const lang of ['en', 'ar']) {
+      await check(`[${lang}] the admin dialog only offers groups of the chosen grade`, async () => {
+        const L = ADD_LABELS[lang]
+        const container = await mountTab(lang)
+        await click(byText(container, 'button', L.add))
+        await flush()
+
+        const grade = gradeSelectIn(modalOf(container))
+        const groups = groupSelectIn(modalOf(container))
+        assert.ok(grade && groups, 'the dialog has a grade and a group selector')
+        assert.deepEqual(
+          Array.from(groups.options).filter((o) => o.value).map((o) => o.textContent.trim()),
+          ['Group A (2nd Sec)'],
+          '2nd secondary groups only'
+        )
+
+        await setSelect(groups, 'grp-5a')
+        await setSelect(grade, '6')
+        const after = groupSelectIn(modalOf(container))
+        assert.equal(after.value, '', 'changing the grade clears the group')
+        assert.deepEqual(
+          Array.from(after.options).filter((o) => o.value).map((o) => o.textContent.trim()),
+          ['Group A (3rd Sec)'],
+          '3rd secondary groups only'
+        )
+      })
+
+      await check(`[${lang}] mismatched passwords are refused before any account is made`, async () => {
+        const L = ADD_LABELS[lang]
+        createCalls.length = 0
+        const container = await mountTab(lang)
+        await click(byText(container, 'button', L.add))
+        await flush()
+        await fillCreateForm(container, {
+          fullName: 'Sara Ali', email: 'sara@x.test',
+          password: 'CreatedPass1', confirmPassword: 'CreatedPass2',
+          phone: '01011112233', parentPhone: '01011112244',
+        })
+        await click(byText(modalOf(container), 'button', L.create))
+        await flush()
+
+        assert.equal(createCalls.length, 0, 'nothing is sent to the backend')
+        assert.ok(
+          container.textContent.includes(lang === 'ar' ? 'كلمتا المرور غير متطابقتين' : 'Passwords do not match'),
+          'the admin is told why'
+        )
+      })
+
+      await check(`[${lang}] a valid form posts the same fields the signup form collects`, async () => {
+        const L = ADD_LABELS[lang]
+        createCalls.length = 0
+        const container = await mountTab(lang)
+        await click(byText(container, 'button', L.add))
+        await flush()
+        await fillCreateForm(container, {
+          fullName: '  Sara   Ali  ', email: ' SARA@x.test ',
+          password: 'CreatedPass1',
+          phone: '01011112233', parentPhone: '01011112244',
+        })
+        await setSelect(groupSelectIn(modalOf(container)), 'grp-5a')
+        await click(byText(modalOf(container), 'button', L.create))
+        await flush()
+
+        assert.equal(createCalls.length, 1, 'exactly one account is created')
+        const sent = createCalls[0]
+        assert.equal(sent.fullName, 'Sara Ali', 'the name is trimmed')
+        assert.equal(sent.email, 'sara@x.test', 'the email is lower-cased')
+        assert.equal(sent.password, 'CreatedPass1')
+        assert.equal(sent.phone, '201011112233', 'phones are normalized like at signup')
+        assert.equal(sent.parentPhone, '201011112244')
+        assert.equal(sent.yearId, '5')
+        assert.equal(sent.groupId, 'grp-5a')
+        assert.equal(sent.isActive, true)
+
+        // The password is shown ONCE so the teacher can hand it over.
+        assert.ok(container.textContent.includes('CreatedPass1'), 'the credentials are shown after creation')
+        assert.ok(
+          container.textContent.includes(lang === 'ar' ? 'تم إنشاء الحساب' : 'The account is created'),
+          'and the admin is told the student can sign in'
+        )
+      })
+    }
+  }
+
   console.log(`\n${passed} checks passed\n`)
 } catch (err) {
   console.error(`\n✗ ${err.message}`)
@@ -570,4 +735,5 @@ try {
 
 await vite.close()
 await viteGroupFailure.close()
+await viteAdminCreate.close()
 process.exit(process.exitCode || 0)

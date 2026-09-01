@@ -3,6 +3,7 @@ import {
   Users, Search, Loader2, TrendingUp, X, Plus, Trash2, Tag, Check, Layers,
   ClipboardList, Edit3, Lock, ChevronLeft, ChevronRight, CheckSquare, Square,
   AlertTriangle, RefreshCw, UserCheck, UserX, Mail, Phone, MapPin, Calendar,
+  UserPlus, Eye, EyeOff, Copy,
 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
 import { YEARS, GOVERNORATES } from '../../data/catalog'
@@ -11,10 +12,11 @@ import {
   fetchStudentAnalytics, fetchGradesForStudent, fetchAttendanceForStudent,
   fetchGroups, createGroup, deleteGroup, updateStudentGroup,
   fetchHomeworkEntries, fetchSubmissionsForStudent,
-  fetchStudentsPaginated, adminUpdateStudent, adminSetStudentPassword,
+  fetchStudentsPaginated, adminCreateStudent, adminUpdateStudent, adminSetStudentPassword,
   bulkUpdateStudentGroup, bulkUpdateStudentStatus,
   cancelAttendance,
 } from '../../lib/api'
+import { normalizePhone, validatePhone } from '../../lib/whatsapp'
 import WhatsAppReportButton from '../WhatsAppReportButton.jsx'
 import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 
@@ -52,6 +54,19 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
 
   // Bulk Selection
   const [selected, setSelected] = useState(new Set())
+
+  // Create Student (admin-made account)
+  const EMPTY_NEW_STUDENT = {
+    fullName: '', email: '', password: '', confirmPassword: '',
+    phone: '', parentPhone: '', yearId: '5', groupId: '',
+    governorate: GOVERNORATES[0], isActive: true,
+  }
+  const [showCreate, setShowCreate] = useState(false)
+  const [createForm, setCreateForm] = useState(EMPTY_NEW_STUDENT)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
+  const [showCreatePassword, setShowCreatePassword] = useState(false)
+  const [createdStudent, setCreatedStudent] = useState(null)
 
   // Detail / Edit / Password Modals
   const [detail, setDetail] = useState(null)
@@ -194,6 +209,113 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
       console.error(err)
     } finally {
       setLoadingDetail(false)
+    }
+  }
+
+  // Create Student — the admin fills in exactly what a student fills in
+  // on the signup form, and the account is ready to sign in immediately.
+  const openCreate = () => {
+    setCreateForm({
+      ...EMPTY_NEW_STUDENT,
+      yearId: yearFilter !== 'all' ? yearFilter : '5',
+      groupId: '',
+    })
+    setCreateError('')
+    setCreatedStudent(null)
+    setShowCreatePassword(false)
+    setShowCreate(true)
+  }
+
+  // A group belongs to one grade; offering another grade's group would be
+  // refused by the database, so the list follows the chosen grade.
+  const createGroupOptions = useMemo(
+    () => groups.filter((g) => !g.year_id || String(g.year_id) === String(createForm.yearId)),
+    [groups, createForm.yearId]
+  )
+
+  const setCreateField = (patch) => setCreateForm((prev) => {
+    const next = { ...prev, ...patch }
+    // Changing the grade always clears a group that no longer applies.
+    if (patch.yearId && patch.yearId !== prev.yearId) next.groupId = ''
+    return next
+  })
+
+  const validateCreateForm = () => {
+    const name = createForm.fullName.trim().replace(/\s+/g, ' ')
+    if (name.length < 2 || name.length > 120) {
+      return lang === 'ar' ? 'يجب أن يكون الاسم بين حرفين و120 حرفاً.' : 'Name must be between 2 and 120 characters.'
+    }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(createForm.email.trim())) {
+      return lang === 'ar' ? 'صيغة البريد الإلكتروني غير صحيحة.' : 'Invalid email address format.'
+    }
+    if (createForm.password.length < 8) {
+      return lang === 'ar' ? 'كلمة المرور يجب أن تكون 8 أحرف على الأقل' : 'Password must be at least 8 characters'
+    }
+    if (createForm.password.length > 72) {
+      return lang === 'ar' ? 'كلمة المرور يجب ألا تزيد عن 72 حرفاً' : 'Password must be at most 72 characters'
+    }
+    if (createForm.password !== createForm.confirmPassword) {
+      return lang === 'ar' ? 'كلمتا المرور غير متطابقتين' : 'Passwords do not match'
+    }
+    const studentPhone = validatePhone(createForm.phone)
+    const guardianPhone = validatePhone(createForm.parentPhone)
+    if (!studentPhone.isValid || !guardianPhone.isValid) {
+      return lang === 'ar' ? 'تحقق من صيغة رقم الطالب وولي الأمر.' : 'Check the student and guardian phone numbers.'
+    }
+    if (createForm.groupId && !createGroupOptions.some((g) => String(g.id) === String(createForm.groupId))) {
+      return lang === 'ar' ? 'المجموعة المختارة غير صالحة لهذا الصف.' : 'The selected group is not valid for this grade.'
+    }
+    return ''
+  }
+
+  const handleCreateStudent = async (e) => {
+    e?.preventDefault?.()
+    setCreateError('')
+    const problem = validateCreateForm()
+    if (problem) {
+      setCreateError(problem)
+      return
+    }
+    setCreating(true)
+    try {
+      const created = await adminCreateStudent({
+        fullName: createForm.fullName.trim().replace(/\s+/g, ' '),
+        email: createForm.email.trim().toLowerCase(),
+        password: createForm.password,
+        phone: normalizePhone(validatePhone(createForm.phone).normalized),
+        parentPhone: normalizePhone(validatePhone(createForm.parentPhone).normalized),
+        yearId: createForm.yearId,
+        groupId: createForm.groupId || null,
+        governorate: createForm.governorate,
+        isActive: createForm.isActive,
+      })
+      // The password is shown once, here, so the teacher can hand it over:
+      // it is stored as a bcrypt hash and can never be read back.
+      setCreatedStudent({
+        ...created,
+        email: createForm.email.trim().toLowerCase(),
+        password: createForm.password,
+      })
+      setSuccessMsg(lang === 'ar' ? 'تم إنشاء حساب الطالب بنجاح' : 'Student account created successfully')
+      setTimeout(() => setSuccessMsg(''), 4000)
+      onRefresh?.()
+      loadPage()
+    } catch (err) {
+      setCreateError(err.message)
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const copyCredentials = async () => {
+    if (!createdStudent) return
+    const text = `${createdStudent.email}\n${createdStudent.password}`
+    try {
+      await navigator.clipboard.writeText(text)
+      setSuccessMsg(lang === 'ar' ? 'تم نسخ بيانات الدخول' : 'Login details copied')
+      setTimeout(() => setSuccessMsg(''), 3000)
+    } catch (_) {
+      /* clipboard blocked (insecure context) — the values stay on screen */
     }
   }
 
@@ -358,6 +480,13 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={openCreate}
+              className="px-4 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black text-xs font-extrabold flex items-center gap-1.5 shadow shadow-yellow-400/20 transition"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>{lang === 'ar' ? 'إضافة طالب' : 'Add Student'}</span>
+            </button>
             <button
               onClick={() => setShowManageGroups(true)}
               className="px-4 py-2 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-xs font-bold flex items-center gap-1.5 hover:bg-purple-100 transition"
@@ -896,6 +1025,214 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                   <WhatsAppReportButton student={detail} />
                 </div>
               </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Create Student Modal */}
+      {showCreate && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 max-h-[88vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-zinc-800 pb-3">
+              <h3 className="font-bold text-lg flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-yellow-500" />
+                <span>{lang === 'ar' ? 'إضافة طالب جديد' : 'Add New Student'}</span>
+              </h3>
+              <button onClick={() => setShowCreate(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {createdStudent ? (
+              /* The account exists — show the credentials ONCE. */
+              <div className="space-y-5">
+                <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-300 text-xs font-bold flex items-start gap-2">
+                  <Check className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>
+                    {lang === 'ar'
+                      ? 'تم إنشاء الحساب ويمكن للطالب تسجيل الدخول فوراً. احفظ بيانات الدخول الآن — لن تظهر كلمة المرور مرة أخرى.'
+                      : 'The account is created and the student can sign in right away. Save these details now — the password is never shown again.'}
+                  </span>
+                </div>
+
+                <div className="space-y-2 p-4 rounded-2xl bg-slate-50 dark:bg-black/50 border border-slate-200 dark:border-zinc-800">
+                  <p className="text-sm font-bold truncate">{createdStudent.full_name}</p>
+                  <div className="flex items-center gap-2 text-xs">
+                    <Mail className="w-3.5 h-3.5 text-yellow-500 shrink-0" />
+                    <span className="font-mono truncate" dir="ltr">{createdStudent.email}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <Lock className="w-3.5 h-3.5 text-yellow-500 shrink-0" />
+                    <span className="font-mono truncate" dir="ltr">{createdStudent.password}</span>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={copyCredentials}
+                    className="flex-1 py-3 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm flex items-center justify-center gap-2"
+                  >
+                    <Copy className="w-4 h-4" />
+                    <span>{lang === 'ar' ? 'نسخ بيانات الدخول' : 'Copy Login Details'}</span>
+                  </button>
+                  <button
+                    onClick={() => { setCreatedStudent(null); setCreateForm({ ...EMPTY_NEW_STUDENT, yearId: createForm.yearId }) }}
+                    className="px-5 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-sm"
+                  >
+                    {lang === 'ar' ? 'إضافة آخر' : 'Add Another'}
+                  </button>
+                </div>
+                <button
+                  onClick={() => setShowCreate(false)}
+                  className="w-full py-2.5 rounded-xl border border-slate-200 dark:border-zinc-800 font-bold text-xs"
+                >
+                  {lang === 'ar' ? 'إغلاق' : 'Close'}
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleCreateStudent} className="space-y-4">
+                {createError && (
+                  <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-bold text-center">
+                    {createError}
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold mb-1">{t('fullNameLabel')}</label>
+                  <input
+                    type="text" required value={createForm.fullName}
+                    onChange={(e) => setCreateField({ fullName: e.target.value })}
+                    placeholder={lang === 'ar' ? 'الاسم الكامل للطالب' : "Student's full name"}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold mb-1">{t('emailLabel')}</label>
+                  <input
+                    type="email" required dir="ltr" value={createForm.email}
+                    autoComplete="off"
+                    onChange={(e) => setCreateField({ email: e.target.value })}
+                    placeholder="student@example.com"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold mb-1">{lang === 'ar' ? 'كلمة المرور' : 'Password'}</label>
+                    <div className="relative">
+                      <input
+                        type={showCreatePassword ? 'text' : 'password'} required minLength={8}
+                        value={createForm.password} autoComplete="new-password" dir="ltr"
+                        onChange={(e) => setCreateField({ password: e.target.value })}
+                        className="w-full px-4 py-2.5 ltr:pr-10 rtl:pl-10 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                      />
+                      <button
+                        type="button" onClick={() => setShowCreatePassword((v) => !v)}
+                        className="absolute top-2.5 ltr:right-3 rtl:left-3 text-slate-400 hover:text-slate-600"
+                        aria-label={showCreatePassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showCreatePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 font-bold mt-1">
+                      {lang === 'ar' ? '8 أحرف على الأقل' : 'At least 8 characters'}
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold mb-1">{lang === 'ar' ? 'تأكيد كلمة المرور' : 'Confirm Password'}</label>
+                    <input
+                      type={showCreatePassword ? 'text' : 'password'} required minLength={8} dir="ltr"
+                      value={createForm.confirmPassword} autoComplete="new-password"
+                      onChange={(e) => setCreateField({ confirmPassword: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold mb-1">{t('studentPhoneLabel')}</label>
+                    <input
+                      type="tel" required dir="ltr" value={createForm.phone}
+                      onChange={(e) => setCreateField({ phone: e.target.value })}
+                      placeholder="01xxxxxxxxx"
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold mb-1">{t('parentPhoneLabel')}</label>
+                    <input
+                      type="tel" required dir="ltr" value={createForm.parentPhone}
+                      onChange={(e) => setCreateField({ parentPhone: e.target.value })}
+                      placeholder="01xxxxxxxxx"
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold mb-1">{t('gradeLabel')}</label>
+                    <select
+                      value={createForm.yearId}
+                      onChange={(e) => setCreateField({ yearId: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                    >
+                      {YEARS.map((y) => <option key={y.id} value={y.id}>{lang === 'ar' ? y.titleAr : y.title}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold mb-1">{t('studentGroup')}</label>
+                    <select
+                      value={createForm.groupId}
+                      onChange={(e) => setCreateField({ groupId: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                    >
+                      <option value="">{t('noGroupAssigned')}</option>
+                      {createGroupOptions.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold mb-1">{t('governorateLabel')}</label>
+                  <select
+                    value={createForm.governorate}
+                    onChange={(e) => setCreateField({ governorate: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                  >
+                    {GOVERNORATES.map((g) => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </div>
+
+                <label className="flex items-center gap-2.5 text-sm font-bold">
+                  <input
+                    type="checkbox" checked={createForm.isActive}
+                    onChange={(e) => setCreateField({ isActive: e.target.checked })}
+                    className="w-4 h-4 accent-yellow-400"
+                  />
+                  <span>{lang === 'ar' ? 'حساب مفعّل' : 'Active Account'}</span>
+                </label>
+
+                <div className="flex gap-3 pt-2">
+                  <button
+                    type="submit" disabled={creating}
+                    className="flex-1 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow"
+                  >
+                    {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                    <span>{lang === 'ar' ? 'إنشاء الحساب' : 'Create Account'}</span>
+                  </button>
+                  <button
+                    type="button" onClick={() => setShowCreate(false)}
+                    className="px-6 py-3 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm"
+                  >
+                    {t('cancel')}
+                  </button>
+                </div>
+              </form>
             )}
           </div>
         </div>
