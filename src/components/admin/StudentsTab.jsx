@@ -253,6 +253,10 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
       setPasswordError(lang === 'ar' ? 'كلمة المرور يجب أن تكون 8 أحرف على الأقل' : 'Password must be at least 8 characters')
       return
     }
+    if (newPassword.length > 72) {
+      setPasswordError(lang === 'ar' ? 'كلمة المرور يجب ألا تزيد عن 72 حرفاً' : 'Password must be at most 72 characters')
+      return
+    }
     if (newPassword !== confirmNewPassword) {
       setPasswordError(lang === 'ar' ? 'كلمتا المرور غير متطابقتين' : 'Passwords do not match')
       return

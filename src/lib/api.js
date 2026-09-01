@@ -28,12 +28,17 @@ function optionalHttpsUrl(value, fieldName) {
 // BACKEND ERROR REPORTING
 // =====================================================================
 /** PostgREST error codes that mean "the RPC is not installed". */
-const MISSING_FUNCTION_CODES = new Set(['PGRST202', '42883'])
+const MISSING_FUNCTION_CODES = new Set(['PGRST202'])
 
 export function isMissingBackendFunction(error) {
   if (!error) return false
   if (MISSING_FUNCTION_CODES.has(String(error.code))) return true
-  return /could not find the function|does not exist/i.test(String(error.message || ''))
+  const msg = String(error.message || '')
+  // PostgREST wording when the RPC is not in the schema cache.
+  // Do NOT treat every Postgres 42883 / "does not exist" as a missing RPC:
+  // that code is also raised when pgcrypto's crypt() is not on the search_path
+  // (the student password-change bug).
+  return /could not find the function/i.test(msg)
 }
 
 /**
@@ -1754,12 +1759,34 @@ export async function adminSetStudentPassword(studentId, newPassword) {
   if (!newPassword || newPassword.length < 8) {
     throw new Error('Password must be at least 8 characters')
   }
+  if (newPassword.length > 72) {
+    throw new Error('Password must be at most 72 characters')
+  }
   if (isSupabaseConfigured()) {
     const { data, error } = await supabase.rpc('admin_set_student_password', {
       target_user_id: studentId,
       new_password: newPassword,
     })
-    if (error) throw describeBackendError(error, "Unable to change the student's password")
+    if (error) {
+      const described = describeBackendError(error, "Unable to change the student's password")
+      const raw = String(error.message || '')
+      if (described.code === 'MISSING_MIGRATION') {
+        described.message =
+          `${described.message} Apply migration-features.sql and then ` +
+          'migration-groups-and-admin-editing.sql in the Supabase SQL editor, ' +
+          'and reload the PostgREST schema cache.'
+      } else if (/crypt|gen_salt/i.test(raw)) {
+        described.message =
+          "Unable to change the student's password: password hashing is unavailable. " +
+          'Re-apply migration-groups-and-admin-editing.sql in the Supabase SQL editor ' +
+          '(it installs pgcrypto on the function search_path).'
+      } else if (/permission denied for (table users|schema auth)/i.test(raw)) {
+        described.message =
+          "Unable to change the student's password: the database role cannot update auth.users. " +
+          'Run the migration as the postgres role in the Supabase SQL editor.'
+      }
+      throw described
+    }
     return data
   }
   throw new Error('Password reset requires Supabase')

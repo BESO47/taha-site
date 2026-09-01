@@ -39,7 +39,7 @@ Rotate any credential that may have been disclosed. Do not test against real stu
 
 ## Administrator password changes
 
-- Admins set a new student password through `admin_set_student_password()`, which is admin-gated in the database and writes only a bcrypt hash (`crypt(new_password, gen_salt('bf'))`) into `auth.users`.
+- Admins set a new student password through `admin_set_student_password()`, which is admin-gated in the database and writes only a bcrypt hash (`crypt(new_password, gen_salt('bf', 10))`, with `extensions` on the function `search_path` so pgcrypto is found) into `auth.users`.
 - The existing password is never retrieved, stored in plaintext, exposed as a hash to the frontend, or copied onto `profiles`. No service-role key is ever present in the browser.
 - The student self-service recovery flow (`resetPasswordForEmail`) is independent and unaffected.
 

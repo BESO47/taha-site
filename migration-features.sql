@@ -185,10 +185,19 @@ REVOKE ALL ON FUNCTION public.admin_initiate_password_reset(UUID) FROM PUBLIC, a
 GRANT EXECUTE ON FUNCTION public.admin_initiate_password_reset(UUID) TO authenticated;
 
 -- ---------------------------------------------------------------------
--- 5. ADMIN SET PASSWORD (direct) — uses auth schema if available
---    This allows admin to set a new password directly without email.
---    It updates the auth.users encrypted password column.
+-- 5. ADMIN SET PASSWORD (direct)
+--    Admin sets a new password without email. GoTrue stores bcrypt in
+--    auth.users.encrypted_password; we hash with pgcrypto (same scheme).
+--
+--    BUG: the previous search_path was `public, auth`. On hosted
+--    Supabase, pgcrypto lives in the `extensions` schema, so
+--    crypt()/gen_salt() raised:
+--      function crypt(text, text) does not exist  (SQLSTATE 42883)
+--    which the dashboard showed as a failed password change.
 -- ---------------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
 CREATE OR REPLACE FUNCTION public.admin_set_student_password(
   target_user_id UUID,
   new_password   TEXT
@@ -196,18 +205,24 @@ CREATE OR REPLACE FUNCTION public.admin_set_student_password(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public, auth, extensions, pg_temp
 AS $$
 DECLARE
   target_role TEXT;
   hashed_pw   TEXT;
+  updated_n   INTEGER;
 BEGIN
-  IF NOT public.is_admin() THEN
+  IF auth.uid() IS NULL OR NOT public.is_admin() THEN
     RAISE EXCEPTION 'Only administrators can set passwords' USING ERRCODE = '42501';
   END IF;
 
-  IF char_length(new_password) < 8 THEN
+  IF new_password IS NULL OR char_length(new_password) < 8 THEN
     RAISE EXCEPTION 'Password must be at least 8 characters' USING ERRCODE = '22023';
+  END IF;
+
+  -- bcrypt (and therefore GoTrue) silently truncates past 72 bytes.
+  IF octet_length(new_password) > 72 THEN
+    RAISE EXCEPTION 'Password must be at most 72 characters' USING ERRCODE = '22023';
   END IF;
 
   SELECT role INTO target_role
@@ -218,18 +233,21 @@ BEGIN
     RAISE EXCEPTION 'Student not found' USING ERRCODE = 'P0002';
   END IF;
 
-  IF target_role = 'admin' THEN
+  IF target_role IS DISTINCT FROM 'student' THEN
     RAISE EXCEPTION 'Cannot set admin passwords through this interface' USING ERRCODE = '42501';
   END IF;
 
-  -- Update the auth.users password using crypt (Supabase uses bcrypt)
+  -- Cost 10 matches GoTrue's bcrypt.GenerateFromPassword default.
+  hashed_pw := crypt(new_password, gen_salt('bf', 10));
+
   UPDATE auth.users
-  SET encrypted_password = crypt(new_password, gen_salt('bf')),
+  SET encrypted_password = hashed_pw,
       email_confirmed_at = COALESCE(email_confirmed_at, now()),
       updated_at = now()
   WHERE id = target_user_id;
 
-  IF NOT FOUND THEN
+  GET DIAGNOSTICS updated_n = ROW_COUNT;
+  IF updated_n = 0 THEN
     RAISE EXCEPTION 'Auth user not found' USING ERRCODE = 'P0002';
   END IF;
 

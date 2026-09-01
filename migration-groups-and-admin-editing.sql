@@ -538,6 +538,76 @@ CREATE TRIGGER submissions_score_bounds
   BEFORE INSERT OR UPDATE ON public.submissions
   FOR EACH ROW EXECUTE FUNCTION public.validate_grade_bounds();
 
+-- ---------------------------------------------------------------------
+-- 6d. ADMIN SET STUDENT PASSWORD — pgcrypto must be on the search_path
+-- ---------------------------------------------------------------------
+-- GoTrue stores bcrypt in auth.users.encrypted_password. Hashing uses
+-- pgcrypto, which Supabase installs in the `extensions` schema — NOT
+-- in `public` or `auth`. The original function therefore failed on
+-- every password change with "function crypt(text, text) does not exist".
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
+CREATE OR REPLACE FUNCTION public.admin_set_student_password(
+  target_user_id UUID,
+  new_password   TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth, extensions, pg_temp
+AS $$
+DECLARE
+  target_role TEXT;
+  hashed_pw   TEXT;
+  updated_n   INTEGER;
+BEGIN
+  IF auth.uid() IS NULL OR NOT public.is_admin() THEN
+    RAISE EXCEPTION 'Only administrators can set passwords' USING ERRCODE = '42501';
+  END IF;
+
+  IF new_password IS NULL OR char_length(new_password) < 8 THEN
+    RAISE EXCEPTION 'Password must be at least 8 characters' USING ERRCODE = '22023';
+  END IF;
+
+  -- bcrypt (and therefore GoTrue) silently truncates past 72 bytes.
+  IF octet_length(new_password) > 72 THEN
+    RAISE EXCEPTION 'Password must be at most 72 characters' USING ERRCODE = '22023';
+  END IF;
+
+  SELECT role INTO target_role
+  FROM public.profiles
+  WHERE id = target_user_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Student not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF target_role IS DISTINCT FROM 'student' THEN
+    RAISE EXCEPTION 'Cannot set admin passwords through this interface' USING ERRCODE = '42501';
+  END IF;
+
+  -- Cost 10 matches GoTrue's bcrypt.GenerateFromPassword default.
+  hashed_pw := crypt(new_password, gen_salt('bf', 10));
+
+  UPDATE auth.users
+  SET encrypted_password = hashed_pw,
+      email_confirmed_at = COALESCE(email_confirmed_at, now()),
+      updated_at = now()
+  WHERE id = target_user_id;
+
+  GET DIAGNOSTICS updated_n = ROW_COUNT;
+  IF updated_n = 0 THEN
+    RAISE EXCEPTION 'Auth user not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  RETURN jsonb_build_object('ok', true, 'user_id', target_user_id);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.admin_set_student_password(UUID, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.admin_set_student_password(UUID, TEXT) TO authenticated;
+
 -- =====================================================================
 -- 7. BULK GROUP ASSIGNMENT — respects the grade rule
 -- ---------------------------------------------------------------------
@@ -594,6 +664,9 @@ $$;
 
 REVOKE ALL ON FUNCTION public.bulk_update_student_group(UUID[], UUID) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.bulk_update_student_group(UUID[], UUID) TO authenticated;
+
+-- Tell PostgREST to pick up the replaced function signature/grants.
+NOTIFY pgrst, 'reload schema';
 
 -- =====================================================================
 -- 8. VERIFY (optional — run these by hand after the migration)

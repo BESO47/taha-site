@@ -99,8 +99,9 @@ Notes:
 From **Students → open a student → Change Password**, set a new password directly.
 
 - The current password is never requested, read or displayed — Supabase stores only a bcrypt hash in `auth.users`, and nothing can reverse it. There is no password column on `profiles` and no hash ever reaches the browser.
-- Enter the new password twice (8+ characters). The change goes through an admin-only RPC that re-checks `is_admin()` in the database.
+- Enter the new password twice (8–72 characters). The change goes through an admin-only RPC that re-checks `is_admin()` in the database.
 - The student's own **Forgot password** recovery flow is unaffected and keeps working.
+- If the dashboard shows `function crypt(text, text) does not exist` (or a "missing function" / type-cast hint), re-apply `migration-groups-and-admin-editing.sql` in the Supabase SQL editor and reload the PostgREST schema cache. The hasher lives in the `extensions` schema and must be on the function `search_path`.
 
 ### Legacy lesson homework
 
