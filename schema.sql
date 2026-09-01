@@ -375,6 +375,11 @@ DO $$ BEGIN
     FOREIGN KEY (group_id) REFERENCES public.groups(id) ON DELETE SET NULL;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- groups.name is the single source of truth for profiles.group_name.
+-- The rename half MUST run AFTER the row is written: profiles carries a
+-- BEFORE trigger (sync_profile_group_name) that re-reads groups.name, so
+-- a BEFORE UPDATE here would hand it the OLD name and the rename would
+-- silently never reach the students.
 CREATE OR REPLACE FUNCTION public.sync_group_profile_names()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -382,21 +387,37 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  IF TG_OP = 'DELETE' THEN
-    UPDATE public.profiles SET group_id = NULL, group_name = NULL WHERE group_id = OLD.id;
-    RETURN OLD;
-  END IF;
-  IF NEW.name IS DISTINCT FROM OLD.name THEN
-    UPDATE public.profiles SET group_name = NEW.name WHERE group_id = NEW.id;
-  END IF;
-  RETURN NEW;
+  UPDATE public.profiles SET group_id = NULL, group_name = NULL WHERE group_id = OLD.id;
+  RETURN OLD;
 END;
 $$;
 
-DROP TRIGGER IF EXISTS groups_sync_profiles ON public.groups;
-CREATE TRIGGER groups_sync_profiles
-  BEFORE UPDATE OR DELETE ON public.groups
+CREATE OR REPLACE FUNCTION public.sync_group_profile_names_after_update()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.name IS DISTINCT FROM OLD.name THEN
+    UPDATE public.profiles SET group_name = NEW.name
+    WHERE group_id = NEW.id AND group_name IS DISTINCT FROM NEW.name;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS groups_sync_profiles           ON public.groups;
+DROP TRIGGER IF EXISTS groups_clear_profiles          ON public.groups;
+DROP TRIGGER IF EXISTS groups_sync_profiles_on_rename ON public.groups;
+
+CREATE TRIGGER groups_clear_profiles
+  BEFORE DELETE ON public.groups
   FOR EACH ROW EXECUTE FUNCTION public.sync_group_profile_names();
+
+CREATE TRIGGER groups_sync_profiles_on_rename
+  AFTER UPDATE ON public.groups
+  FOR EACH ROW EXECUTE FUNCTION public.sync_group_profile_names_after_update();
 
 CREATE OR REPLACE FUNCTION public.sync_profile_group_name()
 RETURNS TRIGGER

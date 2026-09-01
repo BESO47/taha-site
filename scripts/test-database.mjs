@@ -129,14 +129,22 @@ try {
 
   /* ---------- 1. the real migrations, in the documented order -------- */
   await client.query(SUPABASE_STUBS)
-  for (const file of ['schema.sql', 'homework-grading.sql', 'migration-features.sql', 'homework-subpoints.sql']) {
+  const MIGRATIONS = [
+    'schema.sql',
+    'homework-grading.sql',
+    'migration-features.sql',
+    'homework-subpoints.sql',
+    'migration-groups-and-admin-editing.sql',
+  ]
+  for (const file of MIGRATIONS) {
     await client.query(sql(file))
   }
-  console.log('  · applied schema.sql, homework-grading.sql, migration-features.sql, homework-subpoints.sql')
+  console.log(`  · applied ${MIGRATIONS.join(', ')}`)
 
   // Re-running must be safe: every migration is documented as idempotent.
   await client.query(sql('homework-subpoints.sql'))
-  console.log('  · homework-subpoints.sql re-applied cleanly (idempotent)')
+  await client.query(sql('migration-groups-and-admin-editing.sql'))
+  console.log('  · homework-subpoints.sql + migration-groups-and-admin-editing.sql re-applied cleanly (idempotent)')
 
   // Supabase grants table access to the API roles; RLS then decides which
   // rows they see. Function EXECUTE is deliberately NOT blanket-granted
@@ -533,6 +541,235 @@ try {
           AND column_name ILIKE '%password%'`
     )
     assert.equal(rows.length, 0)
+  })
+
+
+  /* ---------- 9. REGISTRATION GROUPS (the empty-selector bug) -------- */
+  let GROUP_A5, GROUP_B5, GROUP_C6
+  await check('an admin can create the groups students pick at signup', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    const mk = async (name, year) => (await client.query(
+      `INSERT INTO public.groups (name, year_id) VALUES ($1, $2) RETURNING id`, [name, year]
+    )).rows[0].id
+    GROUP_A5 = await mk('Group A (2nd Sec)', '5')
+    GROUP_B5 = await mk('Group B (2nd Sec)', '5')
+    GROUP_C6 = await mk('Group C (3rd Sec)', '6')
+    await actingAs(client, null, null)()
+  })
+
+  await check('the signup form (anon) can list the groups of ONE grade', async () => {
+    await actingAs(client, null, 'anon')()
+    const { rows } = await client.query(`SELECT * FROM public.list_registration_groups('5')`)
+    assert.deepEqual(rows.map((r) => r.name).sort(), ['Group A (2nd Sec)', 'Group B (2nd Sec)'])
+    assert.deepEqual(Object.keys(rows[0]).sort(), ['description', 'id', 'name', 'year_id'])
+
+    const other = await client.query(`SELECT * FROM public.list_registration_groups('6')`)
+    assert.deepEqual(other.rows.map((r) => r.name), ['Group C (3rd Sec)'])
+    await actingAs(client, null, null)()
+  })
+
+  await check('anon still cannot read or write the groups table itself', async () => {
+    await actingAs(client, null, 'anon')()
+    const { rows } = await client.query(`SELECT * FROM public.groups`)
+    assert.equal(rows.length, 0, 'RLS keeps the raw table closed')
+    await assert.rejects(
+      client.query(`INSERT INTO public.groups (name, year_id) VALUES ('Hacked','5')`),
+      /row-level security|permission denied/
+    )
+    await actingAs(client, null, null)()
+  })
+
+  await check('a student may read groups but never create/rename/delete one', async () => {
+    await actingAs(client, STU_A, 'authenticated')()
+    const { rows } = await client.query(`SELECT id, name, year_id FROM public.groups`)
+    assert.ok(rows.length >= 3, 'an active student sees group metadata')
+
+    await assert.rejects(
+      client.query(`INSERT INTO public.groups (name, year_id) VALUES ('Student made','5')`),
+      /row-level security|permission denied/
+    )
+    const renamed = await client.query(`UPDATE public.groups SET name = 'Renamed' WHERE id = $1`, [GROUP_A5])
+    assert.equal(renamed.rowCount, 0, 'no UPDATE policy for students')
+    const moved = await client.query(`UPDATE public.groups SET year_id = '6' WHERE id = $1`, [GROUP_A5])
+    assert.equal(moved.rowCount, 0, 'a student cannot move a group to another grade')
+    const removed = await client.query(`DELETE FROM public.groups WHERE id = $1`, [GROUP_A5])
+    assert.equal(removed.rowCount, 0, 'no DELETE policy for students')
+    await actingAs(client, null, null)()
+  })
+
+  /* ---------- 10. SIGNUP STORES THE SELECTED GROUP ------------------- */
+  const STU_G1 = 'cccccccc-0000-0000-0000-000000000001'
+  const STU_G2 = 'cccccccc-0000-0000-0000-000000000002'
+  const STU_G3 = 'cccccccc-0000-0000-0000-000000000003'
+  let phoneSeq = 100
+  const signUpWithGroup = (id, email, year, groupId, extra = {}) => client.query(
+    `INSERT INTO auth.users (id, email, encrypted_password, email_confirmed_at, raw_user_meta_data)
+     VALUES ($1, $2, crypt('InitialPass1', gen_salt('bf')), now(),
+             $3::jsonb || jsonb_build_object('year_id', $4::text, 'group_id', $5::text))`,
+    [id, email, JSON.stringify({ full_name: email, phone: `0100000${phoneSeq++}`, ...extra }), year, groupId]
+  )
+
+  await check('signup persists year_id, group_id AND the synced group_name', async () => {
+    await signUpWithGroup(STU_G1, 'g1@x.test', '5', GROUP_A5)
+    const { rows: [p] } = await client.query(
+      `SELECT year_id, group_id, group_name, role, is_active FROM public.profiles WHERE id = $1`, [STU_G1]
+    )
+    assert.equal(p.year_id, '5')
+    assert.equal(p.group_id, GROUP_A5)
+    assert.equal(p.group_name, 'Group A (2nd Sec)', 'group_name mirrors groups.name')
+    assert.equal(p.role, 'student')
+    assert.equal(p.is_active, true)
+  })
+
+  await check('a group from ANOTHER grade rejects the signup', async () => {
+    await assert.rejects(
+      signUpWithGroup(STU_G2, 'g2@x.test', '5', GROUP_C6),
+      /does not belong to this grade/
+    )
+    const { rows } = await client.query(`SELECT 1 FROM public.profiles WHERE id = $1`, [STU_G2])
+    assert.equal(rows.length, 0, 'no half-created profile is left behind')
+  })
+
+  await check('a group id that does not exist rejects the signup', async () => {
+    await assert.rejects(
+      signUpWithGroup(STU_G3, 'g3@x.test', '5', '00000000-0000-0000-0000-000000000000'),
+      /does not exist/
+    )
+  })
+
+  await check('signup metadata can never grant admin or bypass suspension', async () => {
+    const id = 'cccccccc-0000-0000-0000-000000000004'
+    await client.query(
+      `INSERT INTO auth.users (id, email, encrypted_password, email_confirmed_at, raw_user_meta_data)
+       VALUES ($1,'evil@x.test',crypt('x',gen_salt('bf')),now(),
+               jsonb_build_object('full_name','Evil','year_id','5','role','admin','is_active',false))`, [id]
+    )
+    const { rows: [p] } = await client.query(`SELECT role, is_active FROM public.profiles WHERE id = $1`, [id])
+    assert.equal(p.role, 'student')
+    assert.equal(p.is_active, true)
+  })
+
+  await check('an admin cannot move a student into another grade group either', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    await assert.rejects(
+      client.query(`SELECT public.admin_update_student($1, NULL, NULL, NULL, NULL, '5', $2, NULL, NULL)`,
+        [STU_G1, GROUP_C6]),
+      /does not belong to this grade/
+    )
+    const { rows: [p] } = await client.query(`SELECT group_id FROM public.profiles WHERE id = $1`, [STU_G1])
+    assert.equal(p.group_id, GROUP_A5, 'the student stayed where they were')
+    await actingAs(client, null, null)()
+  })
+
+  await check('renaming a group re-syncs profiles.group_name', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    await client.query(`UPDATE public.groups SET name = 'Group A1' WHERE id = $1`, [GROUP_A5])
+    await actingAs(client, null, null)()
+    const { rows: [p] } = await client.query(`SELECT group_name FROM public.profiles WHERE id = $1`, [STU_G1])
+    assert.equal(p.group_name, 'Group A1', 'groups.name stays the single source of truth')
+  })
+
+  await check('a bulk group assignment cannot cross grades', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    await assert.rejects(
+      client.query(`SELECT public.bulk_update_student_group(ARRAY[$1]::UUID[], $2)`, [STU_G1, GROUP_C6]),
+      /does not belong to this grade/
+    )
+    const { rows: [{ bulk_update_student_group: n }] } = await client.query(
+      `SELECT public.bulk_update_student_group(ARRAY[$1]::UUID[], $2)`, [STU_G1, GROUP_B5]
+    )
+    assert.equal(Number(n), 1)
+    const { rows: [p] } = await client.query(`SELECT group_id, group_name FROM public.profiles WHERE id = $1`, [STU_G1])
+    assert.equal(p.group_id, GROUP_B5)
+    assert.equal(p.group_name, 'Group B (2nd Sec)')
+    // put the student back where the later checks expect them
+    await client.query(`SELECT public.bulk_update_student_group(ARRAY[$1]::UUID[], $2)`, [STU_G1, GROUP_A5])
+    await actingAs(client, null, null)()
+  })
+
+  /* ---------- 11. MULTI-GROUP HOMEWORK VISIBILITY -------------------- */
+  await check('homework targeted at Group A + Group B reaches exactly those groups', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    const { rows: [{ id: multiId }] } = await client.query(
+      `INSERT INTO public.assignments (title, year_id, is_published, questions, total_points, created_by)
+       VALUES ('Multi-group homework','5',true,$1::jsonb,1,$2) RETURNING id`,
+      [JSON.stringify([{ id: 'q1', question: 'Unit?', options: ['A) A', 'B) B'], answer: 'A', points: 1 }]), ADMIN]
+    )
+    const inserted = await client.query(
+      `SELECT public.set_assignment_groups($1, ARRAY[$2,$3]::UUID[]) AS n`, [multiId, GROUP_A5, GROUP_B5]
+    )
+    assert.equal(Number(inserted.rows[0].n), 2)
+    await actingAs(client, null, null)()
+
+    // Group A student -> visible
+    const inA = 'dddddddd-0000-0000-0000-000000000001'
+    const inB = 'dddddddd-0000-0000-0000-000000000002'
+    const inNone = 'dddddddd-0000-0000-0000-000000000003'
+    await signUpWithGroup(inA, 'ina@x.test', '5', GROUP_A5)
+    await signUpWithGroup(inB, 'inb@x.test', '5', GROUP_B5)
+    await client.query(
+      `INSERT INTO auth.users (id, email, encrypted_password, email_confirmed_at, raw_user_meta_data)
+       VALUES ($1,'none@x.test',crypt('x',gen_salt('bf')),now(),
+               jsonb_build_object('full_name','None','year_id','5','phone','01099999999'))`,
+      [inNone]
+    )
+    await actingAs(client, ADMIN, 'authenticated')()
+    // a "Group C" for year 5 so the third student is grouped, just not targeted
+    const { rows: [{ id: groupC5 }] } = await client.query(
+      `INSERT INTO public.groups (name, year_id) VALUES ('Group C (2nd Sec)','5') RETURNING id`
+    )
+    await client.query(`SELECT public.admin_update_student($1,NULL,NULL,NULL,NULL,'5',$2,NULL,NULL)`, [inNone, groupC5])
+    await actingAs(client, null, null)()
+
+    const sees = async (uid) => {
+      await actingAs(client, uid, 'authenticated')()
+      const { rows } = await client.query(`SELECT 1 FROM public.homework_catalog WHERE id = $1`, [multiId])
+      const access = await client.query(`SELECT public.can_access_assignment($1) AS ok`, [multiId])
+      await actingAs(client, null, null)()
+      return rows.length === 1 && access.rows[0].ok === true
+    }
+    assert.equal(await sees(inA), true, 'Group A student sees it')
+    assert.equal(await sees(inB), true, 'Group B student sees it')
+    assert.equal(await sees(inNone), false, 'Group C student must NOT see it')
+  })
+
+  /* ---------- 12. ATTENDANCE ----------------------------------------- */
+  await check('attendance is editable and cancelling really deletes the row', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    await client.query(
+      `INSERT INTO public.attendance (student_id, session_date, status, recorded_by)
+       VALUES ($1, DATE '2026-01-05', 'absent', $2)`, [STU_G1, ADMIN]
+    )
+    await client.query(
+      `INSERT INTO public.attendance (student_id, session_date, status, recorded_by)
+       VALUES ($1, DATE '2026-01-05', 'late', $2)
+       ON CONFLICT (student_id, session_date) DO UPDATE SET status = EXCLUDED.status`, [STU_G1, ADMIN]
+    )
+    const { rows: [row] } = await client.query(
+      `SELECT status FROM public.attendance WHERE student_id = $1 AND session_date = DATE '2026-01-05'`, [STU_G1]
+    )
+    assert.equal(row.status, 'late', 'the unique (student_id, session_date) key upserts')
+
+    const { rows: [{ cancel_attendance: deleted }] } = await client.query(
+      `SELECT public.cancel_attendance($1, DATE '2026-01-05')`, [STU_G1]
+    )
+    assert.equal(deleted, true)
+    const { rows: gone } = await client.query(
+      `SELECT 1 FROM public.attendance WHERE student_id = $1 AND session_date = DATE '2026-01-05'`, [STU_G1]
+    )
+    assert.equal(gone.length, 0, 'the record is gone from PostgreSQL, not just from React')
+    await actingAs(client, null, null)()
+  })
+
+  await check('a student cannot cancel their own attendance', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    await client.query(
+      `INSERT INTO public.attendance (student_id, session_date, status) VALUES ($1, DATE '2026-01-06', 'absent')`,
+      [STU_G1]
+    )
+    await actingAs(client, STU_G1, 'authenticated')()
+    await assert.rejects(client.query(`SELECT public.cancel_attendance($1, DATE '2026-01-06')`, [STU_G1]), /Admin only/)
+    await actingAs(client, null, null)()
   })
 
   console.log(`\n${passed} checks passed\n`)

@@ -49,9 +49,23 @@ const { MemoryRouter } = await import('react-router-dom')
 const { createServer } = await import('vite')
 
 const vite = await createServer({
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false },
   appType: 'custom',
   logLevel: 'error',
+})
+
+// Same app, but every `../lib/api` import resolves to a data layer whose
+// registration group reader throws — used to check error reporting.
+const viteGroupFailure = await createServer({
+  server: { middlewareMode: true, ws: { port: 24699 } },
+  appType: 'custom',
+  logLevel: 'error',
+  resolve: {
+    alias: [{
+      find: '../lib/api',
+      replacement: new URL('./fixtures/api-group-failure.js', import.meta.url).pathname,
+    }],
+  },
 })
 
 const OPTIONS = ['A) Newton', 'B) Inertia', 'C) Zero net force', 'D) Friction']
@@ -341,6 +355,100 @@ try {
       'the parent points are replaced by the sum of its subpoints')
   })
 
+
+  /* ---------------- REGISTRATION: grade -> group selector ------------ */
+  const { default: RegisterPage } = await vite.ssrLoadModule('/src/pages/RegisterPage.jsx')
+
+  const REG_GROUPS = [
+    { id: 'grp-a1', name: 'Group A1', year_id: '5', description: '' },
+    { id: 'grp-a2', name: 'Group A2', year_id: '5', description: '' },
+    { id: 'grp-b1', name: 'Group B1', year_id: '6', description: '' },
+  ]
+
+  /** The group <select> is the one whose options are the group names. */
+  const groupSelect = (container) =>
+    Array.from(container.querySelectorAll('select')).find((sel) =>
+      Array.from(sel.options).some((o) => o.value.startsWith('grp-')) ||
+      Array.from(sel.options).every((o) => !o.value || o.value.startsWith('grp-'))
+    )
+  const gradeSelect = (container) =>
+    Array.from(container.querySelectorAll('select')).find((sel) =>
+      Array.from(sel.options).map((o) => o.value).join(',') === '5,6'
+    )
+  const setSelect = async (sel, value) => {
+    await act(async () => {
+      sel.value = value
+      sel.dispatchEvent(new dom.window.Event('change', { bubbles: true }))
+    })
+    await flush()
+  }
+
+  for (const lang of ['en', 'ar']) {
+    await check(`[${lang}] signup shows only the groups of the selected grade`, async () => {
+      localStorage.setItem('physics_hub_groups', JSON.stringify(REG_GROUPS))
+      const container = await mount(React.createElement(RegisterPage), lang)
+      await flush()
+
+      const groups = groupSelect(container)
+      assert.ok(groups, 'the group selector is rendered')
+      const names = () => Array.from(groups.options).filter((o) => o.value).map((o) => o.textContent.trim())
+      assert.deepEqual(names(), ['Group A1', 'Group A2'], '2nd secondary groups only')
+
+      // Pick one, then switch grade: the choice resets and the list reloads.
+      await setSelect(groups, 'grp-a2')
+      assert.equal(groupSelect(container).value, 'grp-a2')
+
+      await setSelect(gradeSelect(container), '6')
+      const after = groupSelect(container)
+      assert.equal(after.value, '', 'changing the grade clears the selected group')
+      assert.deepEqual(
+        Array.from(after.options).filter((o) => o.value).map((o) => o.textContent.trim()),
+        ['Group B1'],
+        'only 3rd secondary groups remain'
+      )
+      localStorage.removeItem('physics_hub_groups')
+    })
+
+    await check(`[${lang}] a group backend failure is reported, not hidden`, async () => {
+      // The page is rebuilt against a data layer whose group reader fails,
+      // exactly as it does when RLS hides the table or the migration is
+      // missing. A backend error must never look like "no groups yet".
+      const consoleError = console.error
+      console.error = () => {}   // the page logs the failure on purpose
+      const { default: FailingRegisterPage } = await viteGroupFailure.ssrLoadModule('/src/pages/RegisterPage.jsx')
+      const { LanguageProvider } = await viteGroupFailure.ssrLoadModule('/src/lib/i18n.jsx')
+      localStorage.setItem('app_lang', lang)
+      const container = document.createElement('div')
+      document.body.appendChild(container)
+      await act(async () => {
+        createRoot(container).render(
+          React.createElement(MemoryRouter, null,
+            React.createElement(LanguageProvider, null, React.createElement(FailingRegisterPage)))
+        )
+      })
+      await flush()
+
+      const text = container.textContent
+      assert.ok(
+        lang === 'ar'
+          ? text.includes('تعذر تحميل المجموعات')
+          : text.includes('Unable to load groups'),
+        'the visitor is told the groups could not be loaded'
+      )
+      assert.ok(
+        !text.includes('No groups available for this grade yet') &&
+        !text.includes('لا توجد مجموعات متاحة لهذا الصف بعد'),
+        'an error is never presented as an empty group list'
+      )
+      assert.ok(
+        text.includes(lang === 'ar' ? 'إعادة المحاولة' : 'Retry'),
+        'and is offered a retry'
+      )
+      console.error = consoleError
+    })
+
+  }
+
   console.log(`\n${passed} checks passed\n`)
 } catch (err) {
   console.error(`\n✗ ${err.message}`)
@@ -351,4 +459,5 @@ try {
 }
 
 await vite.close()
+await viteGroupFailure.close()
 process.exit(process.exitCode || 0)

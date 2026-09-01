@@ -25,23 +25,156 @@ function optionalHttpsUrl(value, fieldName) {
  */
 
 // =====================================================================
+// BACKEND ERROR REPORTING
+// =====================================================================
+/** PostgREST error codes that mean "the RPC is not installed". */
+const MISSING_FUNCTION_CODES = new Set(['PGRST202', '42883'])
+
+export function isMissingBackendFunction(error) {
+  if (!error) return false
+  if (MISSING_FUNCTION_CODES.has(String(error.code))) return true
+  return /could not find the function|does not exist/i.test(String(error.message || ''))
+}
+
+/**
+ * Turn a Supabase/PostgREST error into something a human can act on,
+ * WITHOUT leaking SQL, table names, hints or connection details.
+ *
+ * @param {any} error   the raw error from supabase-js
+ * @param {string} fallback  what to say when the cause is unknown
+ * @returns {Error}
+ */
+export function describeBackendError(error, fallback = 'The request could not be completed') {
+  if (!error) return new Error(fallback)
+
+  const code = String(error.code || '')
+  const raw = String(error.message || '')
+
+  // Missing migration — the single most common production cause.
+  if (isMissingBackendFunction(error)) {
+    const err = new Error(
+      `${fallback}: the database is missing a required function. ` +
+      'Run the SQL migrations in Supabase (see DEPLOYMENT.md).'
+    )
+    err.code = 'MISSING_MIGRATION'
+    return err
+  }
+
+  // Authorization raised by the database itself.
+  if (code === '42501' || /permission denied|row-level security/i.test(raw)) {
+    const err = new Error(raw && !/^permission denied/i.test(raw) ? raw : 'You are not authorized to perform this action')
+    err.code = 'FORBIDDEN'
+    return err
+  }
+
+  // Deliberate RAISE EXCEPTION messages from our own RPCs are safe to show.
+  if (['22023', '23503', '23514', 'P0002', '28000'].includes(code) && raw) {
+    const err = new Error(raw)
+    err.code = code
+    return err
+  }
+
+  const err = new Error(raw ? `${fallback}: ${raw}` : fallback)
+  err.code = code || 'UNKNOWN'
+  return err
+}
+
+// =====================================================================
 // GROUPS API
 // =====================================================================
-export async function fetchGroups() {
+/**
+ * Groups as an ADMIN or a signed-in student sees them (full row).
+ * Reads go through RLS: "groups: read" allows admins and active students.
+ *
+ * @param {{ yearId?: string|null }} opts
+ */
+export async function fetchGroups({ yearId = null } = {}) {
   if (isSupabaseConfigured()) {
-    const { data, error } = await supabase
+    let query = supabase
       .from('groups')
       .select('*')
       .order('name', { ascending: true })
-    if (error) throw error
+    if (yearId && yearId !== 'all') query = query.eq('year_id', String(yearId))
+    const { data, error } = await query
+    if (error) throw describeBackendError(error, 'Unable to load groups')
     return data || []
   }
 
   try {
     const raw = localStorage.getItem('physics_hub_groups')
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const rows = JSON.parse(raw)
+      return yearId && yearId !== 'all'
+        ? rows.filter((g) => String(g.year_id) === String(yearId))
+        : rows
+    }
   } catch (_) {}
-  return DEFAULT_GROUPS
+  return yearId && yearId !== 'all'
+    ? DEFAULT_GROUPS.filter((g) => String(g.year_id) === String(yearId))
+    : DEFAULT_GROUPS
+}
+
+/**
+ * Groups for the REGISTRATION form.
+ *
+ * The visitor filling in the signup form has no session yet, so they are
+ * the Supabase `anon` role. `public.groups` is protected by RLS that only
+ * admits `authenticated` admins/students, which means a plain
+ * `from('groups').select('*')` returns an empty list AND NO ERROR — that
+ * is exactly why the selector used to be empty for everybody.
+ *
+ * The signup form therefore reads through `list_registration_groups()`
+ * (SECURITY DEFINER, anon-executable, returns only id / name / year_id /
+ * description). Errors are propagated, never swallowed.
+ *
+ * @param {string|null} yearId  filter server-side by grade
+ */
+export async function fetchRegistrationGroups(yearId = null) {
+  if (!isSupabaseConfigured()) {
+    return fetchGroups({ yearId })
+  }
+
+  const { data, error } = await supabase.rpc('list_registration_groups', {
+    p_year_id: yearId ? String(yearId) : null,
+  })
+
+  if (!error) {
+    return (data || []).map((g) => ({
+      id: g.id,
+      name: g.name,
+      year_id: g.year_id,
+      description: g.description ?? null,
+    }))
+  }
+
+  // Older database that has not run migration-groups-and-admin-editing.sql
+  // yet: fall back to the table, which works for a signed-in reader.
+  if (isMissingBackendFunction(error)) {
+    const { data: rows, error: tableError } = await supabase
+      .from('groups')
+      .select('id, name, year_id, description')
+      .order('name', { ascending: true })
+
+    if (tableError) throw describeBackendError(tableError, 'Unable to load groups')
+
+    const { data: sessionData } = await supabase.auth.getSession()
+    if (!sessionData?.session && !(rows || []).length) {
+      // Anonymous + empty is indistinguishable from "RLS hid everything",
+      // so say so instead of pretending there are no groups.
+      const err = new Error(
+        'Unable to load groups: the database is missing list_registration_groups(). ' +
+        'Run migration-groups-and-admin-editing.sql in Supabase.'
+      )
+      err.code = 'MISSING_MIGRATION'
+      throw err
+    }
+
+    return (rows || []).filter(
+      (g) => !yearId || yearId === 'all' || String(g.year_id) === String(yearId)
+    )
+  }
+
+  throw describeBackendError(error, 'Unable to load groups')
 }
 
 export async function createGroup({ name, yearId = '5', description = '' }) {
@@ -96,7 +229,7 @@ export async function updateStudentGroup(studentId, group = null) {
       .update({ group_id: groupId, group_name: groupName })
       .eq('id', studentId)
       .select()
-    if (error) throw error
+    if (error) throw describeBackendError(error, 'Unable to save the selected group')
     return data?.[0]
   }
 
@@ -740,11 +873,10 @@ export async function createHomeworkEntry(payload) {
     const { data, error } = await supabase.from('assignments').insert([row]).select('*')
     if (error) throw error
     const entry = normalizeHomeworkEntry(data?.[0])
-    // Set multi-group assignments if groupIds provided
+    // Multi-group targeting is a real backend write: if it fails the
+    // admin has to know, otherwise the homework silently reaches nobody.
     if (payload.groupIds?.length) {
-      try {
-        await setAssignmentGroups(entry.id, payload.groupIds)
-      } catch (_) {}
+      await setAssignmentGroups(entry.id, payload.groupIds)
     }
     entry.groupIds = payload.groupIds || []
     return entry
@@ -791,11 +923,9 @@ export async function updateHomeworkEntry(id, payload) {
     const { data, error } = await supabase.from('assignments').update(row).eq('id', id).select('*')
     if (error) throw error
     const entry = normalizeHomeworkEntry(data?.[0])
-    // Update multi-group assignments
+    // Update multi-group targeting (errors surface, never swallowed).
     if (payload.groupIds !== undefined) {
-      try {
-        await setAssignmentGroups(id, payload.groupIds || [])
-      } catch (_) {}
+      await setAssignmentGroups(id, payload.groupIds || [])
     }
     entry.groupIds = payload.groupIds || []
     return entry
@@ -1100,7 +1230,7 @@ export async function adminUpdateSubmissionAnswer({ submissionId, questionId, su
       p_subpoint_id: subpointId ? String(subpointId) : null,
       p_new_answer: String(answer),
     })
-    if (error) throw new Error(error.message || 'The answer could not be changed')
+    if (error) throw describeBackendError(error, "Failed to update the student's answer")
     const row = Array.isArray(data) ? data[0] : data
     if (!row?.ok) throw new Error('The answer could not be changed')
 
@@ -1557,7 +1687,7 @@ export async function fetchStudentsPaginated({ page = 1, pageSize = 20, search =
       p_group_id: groupId && groupId !== 'all' && groupId !== 'none' ? groupId : null,
       p_is_active: isActive != null ? isActive : null,
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, 'Unable to load the student list')
     return data || { data: [], total: 0, page: 1, pageSize, totalPages: 0 }
   }
 
@@ -1604,7 +1734,7 @@ export async function adminUpdateStudent(studentId, payload) {
       p_governorate: payload.governorate || null,
       p_is_active: payload.isActive != null ? payload.isActive : null,
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, "Unable to save the student's profile")
     return data
   }
   return { id: studentId, ...payload }
@@ -1619,7 +1749,7 @@ export async function adminSetStudentPassword(studentId, newPassword) {
       target_user_id: studentId,
       new_password: newPassword,
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, "Unable to change the student's password")
     return data
   }
   throw new Error('Password reset requires Supabase')
@@ -1630,7 +1760,7 @@ export async function adminInitiatePasswordReset(studentId) {
     const { data, error } = await supabase.rpc('admin_initiate_password_reset', {
       target_user_id: studentId,
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, 'Unable to start the password reset')
     return data
   }
   throw new Error('Password reset requires Supabase')
@@ -1645,7 +1775,7 @@ export async function cancelAttendance(studentId, sessionDate) {
       p_student_id: studentId,
       p_session_date: sessionDate,
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, 'Unable to cancel the attendance record')
     return data
   }
   return false
@@ -1661,7 +1791,7 @@ export async function bulkUpdateStudentGroup(studentIds, groupId) {
       p_student_ids: studentIds,
       p_group_id: groupId,
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, "Unable to update the selected students' group")
     return data || 0
   }
   return 0
@@ -1674,7 +1804,7 @@ export async function bulkUpdateStudentStatus(studentIds, isActive) {
       p_student_ids: studentIds,
       p_is_active: isActive,
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, "Unable to update the selected students' status")
     return data || 0
   }
   return 0
@@ -1689,7 +1819,7 @@ export async function setAssignmentGroups(assignmentId, groupIds) {
       p_assignment_id: assignmentId,
       p_group_ids: groupIds || [],
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, 'Unable to save the homework groups')
     return data || 0
   }
   return 0
@@ -1700,7 +1830,7 @@ export async function getAssignmentGroups(assignmentId) {
     const { data, error } = await supabase.rpc('get_assignment_groups', {
       p_assignment_id: assignmentId,
     })
-    if (error) throw error
+    if (error) throw describeBackendError(error, 'Unable to load the homework groups')
     return data || []
   }
   return []

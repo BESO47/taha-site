@@ -8,6 +8,8 @@ const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url
 const subpointsSql = readFileSync(new URL('../homework-subpoints.sql', import.meta.url), 'utf8')
 const featuresSql = readFileSync(new URL('../migration-features.sql', import.meta.url), 'utf8')
 const apiClient = readFileSync(new URL('../src/lib/api.js', import.meta.url), 'utf8')
+const groupsSql = readFileSync(new URL('../migration-groups-and-admin-editing.sql', import.meta.url), 'utf8')
+const registerPage = readFileSync(new URL('../src/pages/RegisterPage.jsx', import.meta.url), 'utf8')
 
 const checks = [
   ['lesson reads go through a redacted view', () => {
@@ -90,6 +92,33 @@ const checks = [
     // The browser never holds a service-role key.
     assert.doesNotMatch(envExample, /SERVICE_ROLE/)
     assert.doesNotMatch(apiClient, /service_role|SERVICE_ROLE/)
+  }],
+  /* ---------------- registration groups ---------------- */
+  ['the signup group list is a narrow read-only RPC, not an open table', () => {
+    assert.match(groupsSql, /FUNCTION public\.list_registration_groups\(p_year_id TEXT DEFAULT NULL\)/)
+    assert.match(groupsSql, /SECURITY DEFINER[\s\S]{0,120}STABLE/)
+    assert.match(groupsSql, /GRANT EXECUTE ON FUNCTION public\.list_registration_groups\(TEXT\) TO anon, authenticated/)
+    // Only safe metadata leaves the database.
+    assert.match(groupsSql, /SELECT g\.id, g\.name, g\.year_id, g\.description/)
+    // The table itself stays closed to anon and writable by admins only.
+    assert.doesNotMatch(groupsSql, /CREATE POLICY "groups: [^"]*" ON public\.groups\s+FOR SELECT TO authenticated, anon/)
+    assert.match(groupsSql, /CREATE POLICY "groups: admin write"[\s\S]{0,160}USING \(public\.is_admin\(\)\) WITH CHECK \(public\.is_admin\(\)\)/)
+  }],
+  ['signup never trusts the browser for role, activation or group', () => {
+    assert.match(groupsSql, /'student',\s+-- never taken from the client/)
+    assert.match(groupsSql, /true\s+-- never taken from the client/)
+    assert.match(groupsSql, /RAISE EXCEPTION 'The selected group does not belong to this grade'/)
+    assert.match(groupsSql, /RAISE EXCEPTION 'The selected group does not exist'/)
+    // Enforced for every other write path too.
+    assert.match(groupsSql, /CREATE TRIGGER profiles_validate_group/)
+  }],
+  ['the registration page surfaces backend failures instead of hiding them', () => {
+    assert.doesNotMatch(registerPage, /catch\(\(\) => \{ if \(!cancelled\) setAllGroups\(\[\]\) \}\)/)
+    assert.match(registerPage, /Unable to load groups/)
+    assert.match(registerPage, /setGroupsError/)
+    assert.match(apiClient, /export function describeBackendError/)
+    // A raw SQL / connection string must never be echoed to the browser.
+    assert.doesNotMatch(apiClient, /error\.details|error\.hint/)
   }],
 ]
 

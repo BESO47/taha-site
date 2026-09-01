@@ -74,12 +74,16 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
   // Attendance Cancel
   const [cancellingAttendance, setCancellingAttendance] = useState(null)
 
+  const [groupsError, setGroupsError] = useState('')
+
   const loadGroups = useCallback(async () => {
     try {
+      setGroupsError('')
       const g = await fetchGroups()
       setGroups(g)
     } catch (err) {
-      console.warn('Error loading groups:', err)
+      console.error('Error loading groups:', err)
+      setGroupsError(err.message || 'Unable to load groups.')
     }
   }, [])
 
@@ -666,7 +670,14 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                   <label className="block text-xs font-bold text-slate-500">{lang === 'ar' ? 'المجموعات الحالية' : 'Current groups'}</label>
                   <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-500">{groups.length}</span>
                 </div>
-                {groups.length === 0 ? (
+                {groupsError ? (
+                  <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-bold flex items-center justify-between gap-3">
+                    <span>{lang === 'ar' ? 'تعذر تحميل المجموعات.' : 'Unable to load groups.'}</span>
+                    <button onClick={loadGroups} className="shrink-0 underline underline-offset-2">
+                      {lang === 'ar' ? 'إعادة المحاولة' : 'Retry'}
+                    </button>
+                  </div>
+                ) : groups.length === 0 ? (
                   <div className="text-center py-8 rounded-2xl border border-dashed border-slate-200 dark:border-zinc-800">
                     <Tag className="w-8 h-8 text-slate-300 dark:text-zinc-600 mx-auto mb-2" />
                     <p className="text-xs text-slate-400 font-bold">{lang === 'ar' ? 'لا توجد مجموعات' : 'No groups yet'}</p>

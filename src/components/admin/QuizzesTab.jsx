@@ -31,7 +31,7 @@ export default function QuizzesTab({ students }) {
   const selectedGroupName = groups.find((g) => g.id === groupId)?.name || null
 
   useEffect(() => {
-    fetchGroups().then(setGroups).catch(() => {})
+    fetchGroups().then(setGroups).catch((err) => console.error('Failed to load groups:', err))
   }, [])
 
   const load = useCallback(async () => {

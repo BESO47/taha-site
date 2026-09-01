@@ -63,7 +63,7 @@ export default function AdminDashboardPage() {
         fetchStudents(),
         fetchStudentAnalytics(),
         fetchHomeworkEntries({ publishedOnly: true }).catch(() => []),
-        fetchGroups().catch(() => []),
+        fetchGroups().catch((err) => { console.error('Failed to load groups:', err); return [] }),
       ])
       setStudents(s)
       setAnalytics(a)

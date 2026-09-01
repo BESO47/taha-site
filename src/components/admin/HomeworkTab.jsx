@@ -167,6 +167,7 @@ export default function HomeworkTab() {
   const [confirmEdit, setConfirmEdit] = useState(false)
   const [editBusy, setEditBusy] = useState(false)
   const [editError, setEditError] = useState('')
+  const [loadError, setLoadError] = useState('')
   const [auditRows, setAuditRows] = useState([])
   const [showAudit, setShowAudit] = useState(false)
 
@@ -184,6 +185,7 @@ export default function HomeworkTab() {
 
   const loadBaseData = useCallback(async () => {
     setLoading(true)
+    setLoadError('')
     try {
       const [allEntries, allGroups, allStudents] = await Promise.all([
         fetchHomeworkEntries(),
@@ -194,7 +196,10 @@ export default function HomeworkTab() {
       setGroups(allGroups)
       setStudents(allStudents)
     } catch (err) {
+      // A backend failure must be visible: an empty homework list that is
+      // really an RLS/migration error would be read as "nothing to do".
       console.error('Failed to load homework module data:', err)
+      setLoadError(err.message || 'Unable to load the homework module.')
     } finally {
       setLoading(false)
     }
@@ -740,6 +745,18 @@ export default function HomeworkTab() {
                 {selectedGroupName ? `${t('filterByGroup')} ${selectedGroupName}` : t('allGroups')}
               </span>
             </div>
+
+            {loadError && (
+              <div className="p-3.5 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-bold flex items-start justify-between gap-3">
+                <span className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{loadError}</span>
+                </span>
+                <button onClick={loadBaseData} className="shrink-0 underline underline-offset-2">
+                  {lang === 'ar' ? 'إعادة المحاولة' : 'Retry'}
+                </button>
+              </div>
+            )}
 
             {loading ? (
               <div className="py-14 flex justify-center"><Loader2 className="w-8 h-8 animate-spin text-yellow-500" /></div>

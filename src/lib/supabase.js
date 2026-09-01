@@ -250,6 +250,9 @@ Run these repository migrations in Supabase SQL Editor, in this order:
 1. schema.sql
 2. homework-grading.sql
 3. bulk-messaging.sql
+4. migration-features.sql
+5. homework-subpoints.sql
+6. migration-groups-and-admin-editing.sql
 
 The scripts create the PostgreSQL tables, constraints, indexes, private storage,
 security-filtered content views, Row Level Security policies and server-side RPCs.

@@ -38,7 +38,7 @@ export default function AttendanceTab({ students }) {
   const [confirmCancel, setConfirmCancel] = useState(null)
 
   useEffect(() => {
-    fetchGroups().then(setGroups).catch(() => {})
+    fetchGroups().then(setGroups).catch((err) => console.error('Failed to load groups:', err))
   }, [])
 
   const visible = students.filter((s) => {
