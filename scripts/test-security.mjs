@@ -126,17 +126,28 @@ const checks = [
   /* ---------------- admin password management ---------------- */
   ['admin password change is server-side and admin-gated', () => {
     assert.match(featuresSql, /FUNCTION public\.admin_set_student_password/)
-    assert.match(featuresSql, /IF NOT public\.is_admin\(\) THEN\s+RAISE EXCEPTION 'Only administrators can set passwords'/)
+    assert.match(featuresSql, /IF auth\.uid\(\) IS NULL OR NOT public\.is_admin\(\) THEN\s+RAISE EXCEPTION 'Only administrators can set passwords'/)
     assert.match(featuresSql, /REVOKE ALL ON FUNCTION public\.admin_set_student_password\(UUID, TEXT\) FROM PUBLIC, anon/)
+    // The latest migration reinstalls the same function so a live project
+    // does not have to re-run migration-features.sql.
+    assert.match(groupsSql, /FUNCTION public\.admin_set_student_password/)
+    assert.match(groupsSql, /SET search_path = public, auth, extensions, pg_temp/)
   }],
   ['passwords are only ever hashed, never stored or returned', () => {
-    assert.match(featuresSql, /crypt\(new_password, gen_salt\('bf'\)\)/)
+    // pgcrypto lives in `extensions` on hosted Supabase; omitting that
+    // schema from search_path is what made "Change password" fail with
+    // "function crypt(text, text) does not exist".
+    assert.match(featuresSql, /SET search_path = public, auth, extensions, pg_temp/)
+    assert.match(featuresSql, /crypt\(new_password, gen_salt\('bf', 10\)\)/)
+    assert.match(groupsSql, /crypt\(new_password, gen_salt\('bf', 10\)\)/)
     assert.doesNotMatch(featuresSql, /RETURN[^\n]*new_password/)
     // No plaintext password column anywhere in the schema.
     assert.doesNotMatch(schema, /ALTER TABLE public\.profiles ADD COLUMN IF NOT EXISTS password/i)
     // The browser never holds a service-role key.
     assert.doesNotMatch(envExample, /SERVICE_ROLE/)
     assert.doesNotMatch(apiClient, /service_role|SERVICE_ROLE/)
+    // A crypt() miss must not be mislabeled as "RPC not installed".
+    assert.doesNotMatch(apiClient, /MISSING_FUNCTION_CODES = new Set\(\['PGRST202', '42883'\]\)/)
   }],
   /* ---------------- registration groups ---------------- */
   ['the signup group list is a narrow read-only RPC, not an open table', () => {

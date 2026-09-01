@@ -9,7 +9,7 @@ Apply in Supabase SQL Editor:
 3. `bulk-messaging.sql` — progress-report RPCs.
 4. `migration-features.sql` — multi-group homework, admin student management RPCs, attendance cancellation, paginated student listing, signup group validation.
 5. `homework-subpoints.sql` — nested MCQ subpoints, subpoint-aware marking, admin answer editing with an append-only audit trail.
-6. `migration-groups-and-admin-editing.sql` — anon-readable `list_registration_groups()` for the signup form, strict grade/group validation on every profile write, corrected `groups.name -> profiles.group_name` sync, and re-asserted grants for the admin RPCs.
+6. `migration-groups-and-admin-editing.sql` — anon-readable `list_registration_groups()` for the signup form, strict grade/group validation on every profile write, corrected `groups.name -> profiles.group_name` sync, re-asserted grants for the admin RPCs, and a working `admin_set_student_password` (pgcrypto on the function `search_path`).
 
 The scripts use `IF NOT EXISTS`, `CREATE OR REPLACE`, and policy/trigger recreation where possible, so they are safe to run more than once. Back up production before any migration and test on staging first.
 
@@ -207,7 +207,7 @@ RLS is enabled with a single `SELECT` policy for administrators. There is delibe
 - `bulk_messaging_report(year)`, `student_progress_log(student)` — reporting RPCs.
 - `touch_updated_at()`, `stamp_grader()` — audit triggers.
 - `admin_update_student(...)` — securely updates student profile fields including email sync with auth.users.
-- `admin_set_student_password(uuid, text)` — sets a new password for a student via auth.users encrypted_password.
+- `admin_set_student_password(uuid, text)` — sets a new password for a student. Hashes with pgcrypto bcrypt (`crypt(..., gen_salt('bf', 10))`, `search_path` includes `extensions`) and writes only the hash to `auth.users.encrypted_password`.
 - `admin_initiate_password_reset(uuid)` — returns email for client-side Supabase reset flow.
 - `fetch_students_paginated(...)` — server-side paginated student listing with search/filter.
 - `cancel_attendance(uuid, date)` — deletes an attendance record (admin-only).

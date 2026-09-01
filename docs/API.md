@@ -255,7 +255,7 @@ Errors: not authenticated, not an administrator, submission/question/subpoint no
 
 ### `admin_set_student_password`
 
-Admin only. Sets a new password for a student by writing a bcrypt hash to `auth.users.encrypted_password`. The existing password is never read or returned, and admin accounts cannot be changed through it. `admin_initiate_password_reset(uuid)` returns the target email so the client can start Supabase's own recovery flow.
+Admin only. Sets a new password for a student by hashing it with pgcrypto bcrypt (`search_path` includes `extensions`) and writing the hash to `auth.users.encrypted_password`. The existing password is never read or returned, and admin accounts cannot be changed through it. `admin_initiate_password_reset(uuid)` returns the target email so the client can start Supabase's own recovery flow.
 
 ### `bulk_messaging_report`
 
