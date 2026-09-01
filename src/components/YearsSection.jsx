@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { YEARS } from '../data/catalog'
-import { ArrowLeft, ArrowRight, GraduationCap } from 'lucide-react'
+import { ArrowRight, GraduationCap } from 'lucide-react'
 import { useLanguage } from '../lib/i18n.jsx'
 
 export default function YearsSection() {
@@ -16,7 +16,6 @@ export default function YearsSection() {
   ]
 
   const shown = tab === 'all' ? YEARS : YEARS.filter((y) => y.id === tab)
-  const ArrowIcon = lang === 'ar' ? ArrowLeft : ArrowRight
 
   return (
     <section className="space-y-12 py-16 relative bg-slate-50 dark:bg-zinc-950 text-slate-900 dark:text-white" id="courses">
@@ -105,13 +104,13 @@ export default function YearsSection() {
                           ))}
                         </div>
 
-                        <div className="mt-auto flex items-center justify-between pt-4 border-t border-slate-200 dark:border-zinc-800">
+                        <div className={`mt-auto flex items-center pt-4 border-t border-slate-200 dark:border-zinc-800 ${lang === 'ar' ? 'flex-row-reverse justify-between' : 'justify-between'}`}>
                           <span className="text-sm font-bold text-yellow-600 dark:text-yellow-400 group-hover:underline">
                             {t('exploreLessonsBtn')}
                           </span>
 
-                          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 group-hover:bg-yellow-400 group-hover:text-black transition">
-                            <ArrowIcon className="w-4 h-4" />
+                          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-yellow-400/20 text-yellow-700 dark:text-yellow-400 group-hover:bg-yellow-400 group-hover:text-black transition rtl:rotate-180">
+                            <ArrowRight className="w-4 h-4" />
                           </span>
                         </div>
                       </div>

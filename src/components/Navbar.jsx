@@ -71,15 +71,15 @@ export default function Navbar() {
           {/* Brand Logo & Name */}
           <div className="flex items-center gap-6">
             <Link to="/" className="flex items-center gap-3 group">
-              <div className="h-10 sm:h-12 w-10 sm:w-12 rounded-2xl bg-yellow-400 text-black flex items-center justify-center font-extrabold text-xl shadow-lg shadow-yellow-400/20 group-hover:scale-105 transition">
+              <div className="h-10 sm:h-12 w-10 sm:w-12 rounded-2xl bg-yellow-400 text-black flex items-center justify-center font-extrabold text-xl shadow-lg shadow-yellow-400/20 group-hover:scale-105 transition shrink-0">
                 <Zap className="w-6 h-6 text-black fill-current" />
               </div>
-              <div className="flex flex-col">
-                <span className="font-extrabold text-lg sm:text-xl tracking-tight leading-tight text-white font-outfit">
-                  Physics Hub
+              <div className="flex flex-col min-w-0">
+                <span className="font-extrabold text-base sm:text-xl tracking-tight leading-tight text-white font-outfit truncate">
+                  {lang === 'ar' ? 'فيزكس هاب' : 'Physics Hub'}
                 </span>
-                <span className="text-[11px] text-yellow-400 font-extrabold tracking-wide">
-                  Eng Taha Elsabagh
+                <span className="text-[10px] sm:text-[11px] text-yellow-400 font-extrabold tracking-wide truncate">
+                  {lang === 'ar' ? 'أ. طه الصباغ' : 'Eng. Taha Elsabagh'}
                 </span>
               </div>
             </Link>

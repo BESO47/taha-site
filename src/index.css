@@ -4,6 +4,7 @@
 
 html {
   scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
 }
 
 /* Defensive horizontal-overflow guard. Individual inner regions (admin
@@ -15,13 +16,17 @@ body {
 
 body {
   margin: 0;
-  font-family: "IBM Plex Sans Arabic", sans-serif;
-  direction: rtl;
+  font-family: "IBM Plex Sans Arabic", "Outfit", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
+/* Direction is set on <html> by LanguageProvider at runtime (ar → rtl, en → ltr). */
+html[dir="rtl"] body { text-align: right; }
+html[dir="ltr"] body { text-align: left; }
+
 .smooth {
-  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 /* iOS Safari zooms the viewport when a focused form control renders below
@@ -53,6 +58,7 @@ body {
 
 .animate-slideInLeft {
   animation: slideInLeft 0.6s ease forwards;
+  transform-origin: top;
 }
 
 @keyframes float {
@@ -68,11 +74,78 @@ body {
   animation: float 14s ease-in-out infinite;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  * {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+/* ============ Reusable design tokens ============ */
+@layer components {
+  .ph-card {
+    @apply rounded-3xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-card;
+  }
+  .ph-card-strong {
+    @apply rounded-3xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-lg;
+  }
+  .ph-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold shadow-lg shadow-yellow-400/20 transition focus:outline-none focus:ring-4 focus:ring-yellow-400/30 disabled:opacity-60 disabled:cursor-not-allowed;
+  }
+  .ph-btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-6 py-3 rounded-2xl border-2 border-slate-300 dark:border-zinc-700 hover:border-yellow-500 bg-white dark:bg-zinc-900 text-slate-900 dark:text-zinc-200 font-bold transition focus:outline-none focus:ring-4 focus:ring-yellow-400/20;
+  }
+  .ph-btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 hover:bg-slate-200 dark:hover:bg-zinc-700 transition;
+  }
+  .ph-chip {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-extrabold border;
+  }
+  .ph-input {
+    @apply w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-950 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth;
+  }
+  .ph-label {
+    @apply block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2;
+  }
+  .ph-section {
+    @apply py-16 sm:py-20 relative;
+  }
+  .ph-section-inner {
+    @apply max-w-7xl mx-auto px-4 sm:px-8 space-y-12;
+  }
+  .ph-kicker {
+    @apply inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-yellow-400/15 border border-yellow-500/30 text-slate-900 dark:text-yellow-400 text-xs font-extrabold;
+  }
+  .ph-h2 {
+    @apply font-extrabold text-3xl sm:text-5xl text-slate-900 dark:text-white font-outfit tracking-tight;
+  }
+  .ph-muted {
+    @apply text-sm sm:text-base text-slate-600 dark:text-zinc-400 leading-relaxed;
+  }
+  .ph-table-wrap {
+    @apply overflow-x-auto -mx-2;
+  }
+  .ph-table {
+    @apply w-full text-sm min-w-[640px];
+  }
+  .ph-focus {
+    @apply focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-zinc-900;
   }
 }
 
+/* ============ Accessibility: visible focus ring for keyboard users ============ */
+:focus-visible {
+  outline: 2px solid #facc15;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ============ Scrollbar polish for dark mode + admin tables ============ */
+.dark ::-webkit-scrollbar,
+.dark ::-webkit-scrollbar-thumb {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 #18181b;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .animate-float { animation: none !important; }
+}
