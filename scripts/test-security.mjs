@@ -10,6 +10,8 @@ const featuresSql = readFileSync(new URL('../migration-features.sql', import.met
 const apiClient = readFileSync(new URL('../src/lib/api.js', import.meta.url), 'utf8')
 const groupsSql = readFileSync(new URL('../migration-groups-and-admin-editing.sql', import.meta.url), 'utf8')
 const registerPage = readFileSync(new URL('../src/pages/RegisterPage.jsx', import.meta.url), 'utf8')
+const createStudentSql = readFileSync(new URL('../migration-admin-create-student.sql', import.meta.url), 'utf8')
+const studentsTab = readFileSync(new URL('../src/components/admin/StudentsTab.jsx', import.meta.url), 'utf8')
 const homeworkTab = readFileSync(new URL('../src/components/admin/HomeworkTab.jsx', import.meta.url), 'utf8')
 const gradingLib = readFileSync(new URL('../src/lib/grading.js', import.meta.url), 'utf8')
 
@@ -175,6 +177,34 @@ const checks = [
     assert.match(apiClient, /export function describeBackendError/)
     // A raw SQL / connection string must never be echoed to the browser.
     assert.doesNotMatch(apiClient, /error\.details|error\.hint/)
+  }],
+  /* ---------------- admin-created student accounts ---------------- */
+  ['creating an account is admin-only and never ships a service-role key', () => {
+    // The RPC is the ONLY way the dashboard can make an account, and it
+    // refuses anyone who is not a signed-in administrator.
+    assert.match(createStudentSql, /FUNCTION public\.admin_create_student\(/)
+    assert.match(createStudentSql, /SECURITY DEFINER/)
+    assert.match(createStudentSql, /IF auth\.uid\(\) IS NULL OR NOT public\.is_admin\(\) THEN[\s\S]{0,160}RAISE EXCEPTION 'Only administrators can create student accounts'/)
+    assert.match(createStudentSql, /REVOKE ALL ON FUNCTION public\.admin_create_student\([^)]*\) FROM PUBLIC, anon/)
+    assert.match(createStudentSql, /GRANT EXECUTE ON FUNCTION public\.admin_create_student\([^)]*\) TO authenticated/)
+    // A service-role key in the browser would hand every visitor the
+    // database, so no shipped code may reach for one (comments explaining
+    // why are stripped first, they are not code).
+    const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    assert.doesNotMatch(stripComments(apiClient), /auth\.admin\.|SERVICE_ROLE|service_role/)
+    assert.doesNotMatch(stripComments(studentsTab), /auth\.admin\.|SERVICE_ROLE|service_role/)
+    assert.doesNotMatch(envExample, /VITE_SUPABASE_SERVICE/)
+  }],
+  ['an admin-created account is a plain student with a hashed password', () => {
+    // role/is_active come from the shared signup trigger, never from input.
+    assert.match(createStudentSql, /'student', true\s*\n?\s*\);/)
+    assert.match(createStudentSql, /crypt\(p_password, gen_salt\('bf', 10\)\)/)
+    assert.doesNotMatch(createStudentSql, /INSERT INTO public\.profiles[\s\S]{0,400}'admin'/)
+    // Password rules match the rest of the platform.
+    assert.match(createStudentSql, /Password must be at least 8 characters/)
+    assert.match(createStudentSql, /Password must be at most 72 characters/)
+    // The grade/group rule is re-checked before an auth row is written.
+    assert.match(createStudentSql, /RAISE EXCEPTION 'The selected group does not belong to this grade'/)
   }],
 ]
 

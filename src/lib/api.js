@@ -1755,6 +1755,84 @@ export async function adminUpdateStudent(studentId, payload) {
   return { id: studentId, ...payload }
 }
 
+/**
+ * Create a student ACCOUNT (auth user + profile) from the admin dashboard.
+ *
+ * `supabase.auth.admin.createUser()` is deliberately not used: it requires
+ * the service-role key, which can never be shipped to a browser. The work
+ * happens in the `admin_create_student` SECURITY DEFINER RPC instead, so
+ * the dashboard only ever holds the anon key and the password reaches the
+ * database as plain text over TLS and is stored as a bcrypt hash.
+ *
+ * Creating the account does NOT sign the admin out: no session is issued
+ * for the new user, unlike a browser `signUp()` call.
+ */
+export async function adminCreateStudent(payload = {}) {
+  const password = payload.password || ''
+  if (password.length < 8) throw new Error('Password must be at least 8 characters')
+  if (password.length > 72) throw new Error('Password must be at most 72 characters')
+
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('admin_create_student', {
+      p_full_name: payload.fullName || '',
+      p_email: payload.email || '',
+      p_password: password,
+      p_phone: payload.phone || null,
+      p_parent_phone: payload.parentPhone || null,
+      p_year_id: payload.yearId ? String(payload.yearId) : '5',
+      p_group_id: payload.groupId || null,
+      p_governorate: payload.governorate || null,
+      p_is_active: payload.isActive !== false,
+    })
+    if (error) {
+      const described = describeBackendError(error, 'Unable to create the student account')
+      const raw = String(error.message || '')
+      if (described.code === 'MISSING_MIGRATION') {
+        described.message =
+          `${described.message} Apply migration-admin-create-student.sql in the ` +
+          'Supabase SQL editor, and reload the PostgREST schema cache.'
+      } else if (/crypt|gen_salt/i.test(raw)) {
+        described.message =
+          'Unable to create the student account: password hashing is unavailable. ' +
+          'Re-apply migration-groups-and-admin-editing.sql in the Supabase SQL editor ' +
+          '(it installs pgcrypto on the function search_path).'
+      } else if (/permission denied for (table users|table identities|schema auth)/i.test(raw)) {
+        described.message =
+          'Unable to create the student account: the database role cannot write to auth.users. ' +
+          'Run the migration as the postgres role in the Supabase SQL editor.'
+      }
+      throw described
+    }
+    return data
+  }
+
+  // Demo mode (no Supabase): keep the dashboard usable offline. The same
+  // localStorage list `fetchStudents()` reads is updated, so the new row
+  // shows up in the table exactly as a real one would.
+  const existing = await fetchStudents()
+  const email = String(payload.email || '').trim().toLowerCase()
+  if (existing.some((s) => String(s.email || '').toLowerCase() === email)) {
+    throw new Error('This email is already registered')
+  }
+  const student = {
+    id: `student-${Date.now()}`,
+    full_name: payload.fullName,
+    email,
+    phone: payload.phone || null,
+    parent_phone: payload.parentPhone || null,
+    year_id: String(payload.yearId || '5'),
+    group_id: payload.groupId || null,
+    governorate: payload.governorate || null,
+    is_active: payload.isActive !== false,
+    role: 'student',
+    created_at: new Date().toISOString(),
+  }
+  try {
+    localStorage.setItem('physics_hub_sample_students', JSON.stringify([student, ...existing]))
+  } catch (_) {}
+  return student
+}
+
 export async function adminSetStudentPassword(studentId, newPassword) {
   if (!newPassword || newPassword.length < 8) {
     throw new Error('Password must be at least 8 characters')

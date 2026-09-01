@@ -135,6 +135,7 @@ try {
     'migration-features.sql',
     'homework-subpoints.sql',
     'migration-groups-and-admin-editing.sql',
+    'migration-admin-create-student.sql',
   ]
   for (const file of MIGRATIONS) {
     await client.query(sql(file))
@@ -144,7 +145,8 @@ try {
   // Re-running must be safe: every migration is documented as idempotent.
   await client.query(sql('homework-subpoints.sql'))
   await client.query(sql('migration-groups-and-admin-editing.sql'))
-  console.log('  · homework-subpoints.sql + migration-groups-and-admin-editing.sql re-applied cleanly (idempotent)')
+  await client.query(sql('migration-admin-create-student.sql'))
+  console.log('  · homework-subpoints.sql + migration-groups-and-admin-editing.sql + migration-admin-create-student.sql re-applied cleanly (idempotent)')
 
   // Supabase grants table access to the API roles; RLS then decides which
   // rows they see. Function EXECUTE is deliberately NOT blanket-granted
@@ -809,6 +811,97 @@ try {
     // put the student back where the later checks expect them
     await client.query(`SELECT public.bulk_update_student_group(ARRAY[$1]::UUID[], $2)`, [STU_G1, GROUP_A5])
     await actingAs(client, null, null)()
+  })
+
+  /* ---------- 10b. ADMIN CREATES A STUDENT ACCOUNT ------------------- */
+  await check('admin_create_student creates a login-ready account and its profile', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    const { rows: [{ res }] } = await client.query(
+      `SELECT public.admin_create_student(
+         '  Sara   Ali  ', 'SARA@x.test', 'CreatedPass1',
+         '+20 100 111 2233', '01011112244', '5', $1, 'القاهرة', true) AS res`,
+      [GROUP_A5]
+    )
+    await actingAs(client, null, null)()
+
+    assert.equal(res.full_name, 'Sara Ali', 'the name is trimmed and collapsed')
+    assert.equal(res.email, 'sara@x.test', 'the email is lower-cased')
+    assert.equal(res.role, 'student', 'the role is server-controlled')
+    assert.equal(res.is_active, true)
+    assert.equal(res.year_id, '5')
+    assert.equal(res.group_id, GROUP_A5)
+    const { rows: [g] } = await client.query(`SELECT name FROM public.groups WHERE id = $1`, [GROUP_A5])
+    assert.equal(res.group_name, g.name, 'group_name is synced like a real signup')
+    assert.equal(res.phone, '201001112233', 'the phone is stored as digits only')
+
+    const { rows: [u] } = await client.query(
+      `SELECT email, encrypted_password, email_confirmed_at FROM auth.users WHERE id = $1`, [res.id]
+    )
+    assert.equal(u.email, 'sara@x.test')
+    assert.ok(u.email_confirmed_at, 'no confirmation e-mail round-trip is needed')
+    assert.match(u.encrypted_password, /^\$2[aby]\$/, 'stored as a bcrypt hash, never plaintext')
+    const { rows: [{ ok }] } = await client.query(
+      `SELECT (encrypted_password = crypt('CreatedPass1', encrypted_password)) AS ok
+         FROM auth.users WHERE id = $1`, [res.id]
+    )
+    assert.equal(ok, true, 'the student can sign in with the password the admin typed')
+  })
+
+  await check('admin_create_student can create a SUSPENDED account', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    const { rows: [{ res }] } = await client.query(
+      `SELECT public.admin_create_student(
+         'Omar Nabil', 'omar@x.test', 'CreatedPass1',
+         '01011112255', '01011112266', '6', NULL, NULL, false) AS res`
+    )
+    await actingAs(client, null, null)()
+    assert.equal(res.is_active, false, 'is_active is never taken from signup metadata')
+    assert.equal(res.year_id, '6')
+    assert.equal(res.group_id, null)
+  })
+
+  await check('admin_create_student refuses duplicates, weak passwords and bad grades/groups', async () => {
+    await actingAs(client, ADMIN, 'authenticated')()
+    await assert.rejects(
+      client.query(`SELECT public.admin_create_student('Dup','sara@x.test','CreatedPass1','01011112277','01011112288','5',NULL,NULL,true)`),
+      /already registered/
+    )
+    await assert.rejects(
+      client.query(`SELECT public.admin_create_student('Dup Phone','new@x.test','CreatedPass1','201001112233','01011112288','5',NULL,NULL,true)`),
+      /phone number is already registered/
+    )
+    await assert.rejects(
+      client.query(`SELECT public.admin_create_student('Weak','weak@x.test','short','01011112299','01011112288','5',NULL,NULL,true)`),
+      /at least 8 characters/
+    )
+    await assert.rejects(
+      client.query(`SELECT public.admin_create_student('Bad Mail','not-an-email','CreatedPass1','01011113300','01011112288','5',NULL,NULL,true)`),
+      /Invalid email/
+    )
+    await assert.rejects(
+      client.query(
+        `SELECT public.admin_create_student('Wrong Group','wg@x.test','CreatedPass1','01011113311','01011112288','5',$1,NULL,true)`,
+        [GROUP_C6]
+      ),
+      /does not belong to this grade/
+    )
+    await actingAs(client, null, null)()
+
+    const { rows } = await client.query(
+      `SELECT 1 FROM auth.users WHERE email IN ('weak@x.test','not-an-email','wg@x.test','new@x.test')`
+    )
+    assert.equal(rows.length, 0, 'a rejected creation leaves no auth user behind')
+  })
+
+  await check('a student cannot create accounts', async () => {
+    await actingAs(client, STU_A, 'authenticated')()
+    await assert.rejects(
+      client.query(`SELECT public.admin_create_student('Mine','hacker@x.test','CreatedPass1','01011114400','01011114401','5',NULL,NULL,true)`),
+      /Only administrators can create student accounts/
+    )
+    await actingAs(client, null, null)()
+    const { rows } = await client.query(`SELECT 1 FROM auth.users WHERE email = 'hacker@x.test'`)
+    assert.equal(rows.length, 0)
   })
 
   /* ---------- 11. MULTI-GROUP HOMEWORK VISIBILITY -------------------- */

@@ -253,6 +253,30 @@ Every call appends a row to `submission_answer_edits` (student, submission, ques
 
 Errors: not authenticated, not an administrator, submission/question/subpoint not found, answer not among the options, unchanged answer, oversized payload.
 
+### `admin_create_student`
+
+Admin only. Creates a complete student account from the dashboard — the same fields the public signup form collects.
+
+```text
+admin_create_student(
+  p_full_name    text,
+  p_email        text,
+  p_password     text,
+  p_phone        text,
+  p_parent_phone text,
+  p_year_id      text,     -- '5' or '6'
+  p_group_id     uuid,     -- optional, must belong to that grade
+  p_governorate  text,
+  p_is_active    boolean
+) returns jsonb              -- the created profile row
+```
+
+It inserts the `auth.users` row (bcrypt hash via pgcrypto, `email_confirmed_at` set so no confirmation e-mail is needed) plus the matching `auth.identities` e-mail identity, and the existing `on_auth_user_created` trigger creates the profile from the same metadata a browser signup posts. `role` is always `student` and the grade/group rule is enforced by the shared trigger, so an admin-created account cannot differ from a self-registered one. `p_is_active` is applied after the trigger, which is the only way to create a pre-suspended account.
+
+The service-role key is deliberately never used or shipped to the browser; the dashboard runs on the anon key like every other screen. The password is only ever stored hashed and cannot be read back — the dashboard therefore shows it once, right after creation.
+
+Errors (all safe to display): name length, invalid e-mail, password shorter than 8 or longer than 72 characters, missing/invalid phone numbers, e-mail already registered, student phone already registered, group missing or belonging to another grade, caller not an administrator.
+
 ### `admin_set_student_password`
 
 Admin only. Sets a new password for a student by hashing it with pgcrypto bcrypt (`search_path` includes `extensions`) and writing the hash to `auth.users.encrypted_password`. The existing password is never read or returned, and admin accounts cannot be changed through it. `admin_initiate_password_reset(uuid)` returns the target email so the client can start Supabase's own recovery flow.

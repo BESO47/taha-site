@@ -16,6 +16,23 @@ Open `/admin`. Overview cards show student count, active count, attendance rate,
 
 ## Students and groups
 
+### Add a student (create an account for them)
+
+Use this when a student cannot register themselves — you enter exactly what the signup form asks for and the account works immediately.
+
+1. Open the **Students** tab and click **Add Student**.
+2. Fill in: full name, email, password (8–72 characters) and its confirmation, student phone, guardian phone, grade, group (optional), governorate.
+3. The group list only shows groups of the grade you picked; changing the grade clears the choice.
+4. Leave **Active Account** ticked, or untick it to create the account already suspended.
+5. Click **Create Account**. The account is created with the e-mail already confirmed, so the student can sign in straight away with no confirmation e-mail.
+6. The confirmation screen shows the e-mail and password once, with a **Copy Login Details** button. Passwords are stored hashed and can never be shown again — if it is lost, use **Change Password** instead.
+
+Your own admin session is not affected: creating a student never signs you out.
+
+Common refusals, all shown in the dialog: the e-mail or student phone is already registered, the password is too short, or the chosen group belongs to a different grade.
+
+If the button reports a missing database function, apply `migration-admin-create-student.sql` in the Supabase SQL editor and reload the PostgREST schema cache.
+
 ### Manage a student
 
 - Search by name, email, or phone; filter by grade, group, or active/suspended status.

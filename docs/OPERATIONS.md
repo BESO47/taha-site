@@ -21,6 +21,7 @@
    - `migration-features.sql`
    - `homework-subpoints.sql`
    - `migration-groups-and-admin-editing.sql`
+   - `migration-admin-create-student.sql`
 3. In Authentication settings, decide whether email confirmation is required.
 4. Set Site URL and allowed redirect URLs, including `/reset-password` on production.
 5. Obtain project URL and public anon/publishable key.
@@ -227,6 +228,7 @@ Review major-version release notes and lockfile diffs. Never use `npm audit fix 
 | "Edit Answer" button is not shown at all | The paper has no submission row (nothing to edit yet), or `permission denied for function admin_update_submission_answer`: re-apply `migration-groups-and-admin-editing.sql` and reload the PostgREST schema cache |
 | Answer edit fails with "Score X exceeds maximum Y" | Stale `assignments.max_score` for that entry. Re-apply `schema.sql` or `migration-groups-and-admin-editing.sql` (the bound now follows the answer key), or save the homework entry once so `total_points` is refreshed |
 | Changing a student's password shows "function crypt(text, text) does not exist" (or a "missing function" / type-cast hint) | `admin_set_student_password` hashed with pgcrypto but its `search_path` omitted the `extensions` schema. Re-apply `migration-groups-and-admin-editing.sql` (section 6d) and reload the PostgREST schema cache |
+| **Add Student** fails with a missing-function or permission error | Apply `migration-admin-create-student.sql` (it creates `admin_create_student`) and reload the PostgREST schema cache. Run it as the `postgres` role so the function may write `auth.users` |
 | Signup group selector empty for every grade | Apply `migration-groups-and-admin-editing.sql`; `public.groups` is invisible to the `anon` role, the form reads `list_registration_groups()` |
 | "Unable to load groups" on the signup page | The RPC is missing or PostgREST has a stale schema cache: re-apply the migration, then reload the schema cache |
 | Group renamed but students keep the old group name | Apply `migration-groups-and-admin-editing.sql`; the old `BEFORE UPDATE` trigger reverted every rename |
