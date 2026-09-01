@@ -20,6 +20,7 @@
    - `bulk-messaging.sql`
    - `migration-features.sql`
    - `homework-subpoints.sql`
+   - `migration-groups-and-admin-editing.sql`
 3. In Authentication settings, decide whether email confirmation is required.
 4. Set Site URL and allowed redirect URLs, including `/reset-password` on production.
 5. Obtain project URL and public anon/publishable key.
@@ -222,6 +223,9 @@ Review major-version release notes and lockfile diffs. Never use `npm audit fix 
 | Catalog relation missing | Reapply current `schema.sql` and refresh PostgREST schema cache |
 | Homework grading unavailable | Apply `homework-grading.sql`; configured mode intentionally refuses insecure client grading fallback |
 | Subpoints not marked / admin answer edit missing | Apply `homework-subpoints.sql`; it upgrades `ph_mark_answers` and adds `admin_update_submission_answer` |
+| Signup group selector empty for every grade | Apply `migration-groups-and-admin-editing.sql`; `public.groups` is invisible to the `anon` role, the form reads `list_registration_groups()` |
+| "Unable to load groups" on the signup page | The RPC is missing or PostgREST has a stale schema cache: re-apply the migration, then reload the schema cache |
+| Group renamed but students keep the old group name | Apply `migration-groups-and-admin-editing.sql`; the old `BEFORE UPDATE` trigger reverted every rename |
 | Homework feed empty | Check publication, active profile, matching year/group, and `homework_catalog` grants |
 | Explanation video remains locked | Submission must have status graded and non-null score for that user |
 | Upload rejected | Check private bucket migration, MIME/extension, size ≤10 MB, and user-folder prefix |

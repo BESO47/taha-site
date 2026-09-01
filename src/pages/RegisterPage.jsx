@@ -6,7 +6,7 @@ import { YEARS, GOVERNORATES } from '../data/catalog'
 import { supabase } from '../lib/supabase'
 import { normalizePhone, validatePhone } from '../lib/whatsapp'
 import { useLanguage } from '../lib/i18n.jsx'
-import { fetchGroups } from '../lib/api'
+import { fetchRegistrationGroups } from '../lib/api'
 
 export default function RegisterPage() {
   const { lang, t } = useLanguage()
@@ -24,24 +24,44 @@ export default function RegisterPage() {
   const [errorMsg, setErrorMsg] = useState('')
   const [isSuccess, setIsSuccess] = useState(false)
 
-  // Group selection
+  // Group selection. The list is loaded from the backend for the CURRENT
+  // grade only; changing the grade clears the choice and reloads.
   const [allGroups, setAllGroups] = useState([])
   const [selectedGroupId, setSelectedGroupId] = useState('')
   const [loadingGroups, setLoadingGroups] = useState(false)
+  const [groupsError, setGroupsError] = useState('')
+  const [groupsReloadKey, setGroupsReloadKey] = useState(0)
 
-  // Load groups for selected year
   useEffect(() => {
     let cancelled = false
     setLoadingGroups(true)
-    setSelectedGroupId('') // Reset when year changes
-    fetchGroups()
+    setGroupsError('')
+    setSelectedGroupId('') // 1.2 — a grade change always clears the group
+    fetchRegistrationGroups(selectedYear)
       .then((groups) => {
-        if (!cancelled) setAllGroups(groups.filter((g) => String(g.year_id) === String(selectedYear)))
+        if (cancelled) return
+        // The server already filters by grade; the client re-checks so a
+        // stale/cached row can never offer another grade's group.
+        setAllGroups(
+          (groups || []).filter(
+            (g) => !g.year_id || String(g.year_id) === String(selectedYear)
+          )
+        )
       })
-      .catch(() => { if (!cancelled) setAllGroups([]) })
+      .catch((err) => {
+        // 8 — never turn a backend failure into "there are no groups".
+        if (cancelled) return
+        setAllGroups([])
+        console.error('Failed to load registration groups:', err)
+        setGroupsError(
+          lang === 'ar'
+            ? 'تعذر تحميل المجموعات. برجاء المحاولة مرة أخرى.'
+            : 'Unable to load groups. Please try again.'
+        )
+      })
       .finally(() => { if (!cancelled) setLoadingGroups(false) })
     return () => { cancelled = true }
-  }, [selectedYear])
+  }, [selectedYear, groupsReloadKey, lang])
 
   const availableGroups = allGroups
 
@@ -80,6 +100,18 @@ export default function RegisterPage() {
       return
     }
 
+    // 1.3 — never post a group that does not belong to the chosen grade.
+    // The database re-validates and refuses the signup, this is only so
+    // the student gets a precise message instead of a generic failure.
+    if (selectedGroupId && !availableGroups.some((g) => String(g.id) === String(selectedGroupId))) {
+      setErrorMsg(
+        lang === 'ar'
+          ? 'المجموعة المختارة غير صالحة لهذا الصف.'
+          : 'Your selected group is not valid for this grade.'
+      )
+      return
+    }
+
     setIsLoading(true)
 
     try {
@@ -106,6 +138,14 @@ export default function RegisterPage() {
           setErrorMsg(lang === 'ar' ? 'هذا البريد الإلكتروني مُسجّل بالفعل.' : 'This email is already registered.')
         } else if (authError.code === 'email_address_invalid') {
           setErrorMsg(lang === 'ar' ? 'صيغة البريد الإلكتروني غير صحيحة.' : 'Invalid email address format.')
+        } else if (selectedGroupId && /database error/i.test(authError.message || '')) {
+          // The signup trigger validates the group against the grade and
+          // aborts the account creation when they do not match.
+          setErrorMsg(
+            lang === 'ar'
+              ? 'تعذر حفظ المجموعة المختارة: المجموعة غير صالحة لهذا الصف.'
+              : 'Unable to save the selected group: it is not valid for this grade.'
+          )
         } else {
           setErrorMsg(lang === 'ar' ? 'حدث خطأ أثناء إنشاء الحساب، حاول مجدداً.' : 'An error occurred during account creation.')
         }
@@ -333,11 +373,22 @@ export default function RegisterPage() {
                   </select>
                   <Layers className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500 pointer-events-none" />
                 </div>
-                {availableGroups.length === 0 && !loadingGroups && (
+                {groupsError ? (
+                  <p className="mt-1.5 text-xs font-bold text-red-600 dark:text-red-400 flex flex-wrap items-center gap-2">
+                    <span>{groupsError}</span>
+                    <button
+                      type="button"
+                      onClick={() => setGroupsReloadKey((k) => k + 1)}
+                      className="underline underline-offset-2 hover:text-red-700 dark:hover:text-red-300"
+                    >
+                      {lang === 'ar' ? 'إعادة المحاولة' : 'Retry'}
+                    </button>
+                  </p>
+                ) : availableGroups.length === 0 && !loadingGroups ? (
                   <p className="mt-1.5 text-xs text-slate-400 dark:text-zinc-500">
                     {lang === 'ar' ? 'لا توجد مجموعات متاحة لهذا الصف بعد.' : 'No groups available for this grade yet.'}
                   </p>
-                )}
+                ) : null}
               </div>
 
               {/* Password */}

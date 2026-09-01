@@ -9,6 +9,7 @@ Apply in Supabase SQL Editor:
 3. `bulk-messaging.sql` — progress-report RPCs.
 4. `migration-features.sql` — multi-group homework, admin student management RPCs, attendance cancellation, paginated student listing, signup group validation.
 5. `homework-subpoints.sql` — nested MCQ subpoints, subpoint-aware marking, admin answer editing with an append-only audit trail.
+6. `migration-groups-and-admin-editing.sql` — anon-readable `list_registration_groups()` for the signup form, strict grade/group validation on every profile write, corrected `groups.name -> profiles.group_name` sync, and re-asserted grants for the admin RPCs.
 
 The scripts use `IF NOT EXISTS`, `CREATE OR REPLACE`, and policy/trigger recreation where possible, so they are safe to run more than once. Back up production before any migration and test on staging first.
 
