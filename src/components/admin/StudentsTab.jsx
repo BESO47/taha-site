@@ -717,24 +717,57 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
               <div className="py-12 flex justify-center"><Loader2 className="w-7 h-7 animate-spin text-yellow-500" /></div>
             ) : (
               <>
+                {/* Identity — name, status, grade, group, registration date */}
+                <div className="flex items-start justify-between gap-3 flex-wrap p-3.5 rounded-2xl bg-yellow-400/10 border border-yellow-400/30">
+                  <div className="min-w-0 space-y-1">
+                    <p className="font-extrabold text-sm truncate">{detail.full_name}</p>
+                    <p className="text-[11px] text-slate-500 font-bold">
+                      {lang === 'ar'
+                        ? YEARS.find((y) => y.id === detail.year_id)?.shortTitleAr
+                        : YEARS.find((y) => y.id === detail.year_id)?.shortTitle}
+                      {detail.group_name ? ` · ${detail.group_name}` : ` · ${t('noGroupAssigned')}`}
+                    </p>
+                    <p className="text-[10px] text-slate-400 font-bold flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      {lang === 'ar' ? 'تاريخ التسجيل' : 'Registered'}:{' '}
+                      <span className="font-mono">
+                        {detail.created_at
+                          ? new Date(detail.created_at).toLocaleDateString(lang === 'ar' ? 'ar-EG' : 'en-GB')
+                          : '—'}
+                      </span>
+                    </p>
+                  </div>
+                  <span
+                    className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-bold ${
+                      detail.is_active
+                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                        : 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300'
+                    }`}
+                  >
+                    {detail.is_active
+                      ? (lang === 'ar' ? 'حساب مفعّل' : 'Active account')
+                      : (lang === 'ar' ? 'حساب موقوف' : 'Suspended account')}
+                  </span>
+                </div>
+
                 {/* Contact Info */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                   <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-black/50">
-                    <Mail className="w-4 h-4 text-yellow-500" />
+                    <Mail className="w-4 h-4 text-yellow-500 shrink-0" />
                     <span className="font-mono truncate" dir="ltr">{detail.email || '—'}</span>
                   </div>
                   <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-black/50">
-                    <Phone className="w-4 h-4 text-yellow-500" />
+                    <Phone className="w-4 h-4 text-yellow-500 shrink-0" />
                     <span className="font-mono" dir="ltr">{detail.phone || '—'}</span>
                   </div>
                   <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-black/50">
-                    <Phone className="w-4 h-4 text-green-500" />
+                    <Phone className="w-4 h-4 text-green-500 shrink-0" />
                     <span className="text-slate-500">{lang === 'ar' ? 'ولي الأمر' : 'Guardian'}:</span>
-                    <span className="font-mono" dir="ltr">{detail.parent_phone || '—'}</span>
+                    <span className="font-mono truncate" dir="ltr">{detail.parent_phone || '—'}</span>
                   </div>
                   <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-black/50">
-                    <MapPin className="w-4 h-4 text-purple-500" />
-                    <span>{detail.governorate || '—'}</span>
+                    <MapPin className="w-4 h-4 text-purple-500 shrink-0" />
+                    <span className="truncate">{detail.governorate || '—'}</span>
                   </div>
                 </div>
 
@@ -948,7 +981,13 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
               <span>{lang === 'ar' ? 'سيتم تعيين كلمة مرور جديدة للطالب. لا يمكن استرجاع كلمة المرور القديمة.' : 'A new password will be set for this student. The old password cannot be recovered.'}</span>
             </div>
 
-            <p className="text-sm font-bold">{passwordModal.full_name}</p>
+            {/* Who the change applies to — the CURRENT password is never
+                requested, read or shown: Supabase only stores a bcrypt
+                hash in auth.users and nothing can reverse it. */}
+            <div className="space-y-1.5 p-3.5 rounded-xl bg-slate-50 dark:bg-black/50 border border-slate-200 dark:border-zinc-800">
+              <p className="text-sm font-bold truncate">{passwordModal.full_name}</p>
+              <p className="text-[11px] font-mono text-slate-500 truncate" dir="ltr">{passwordModal.email || '—'}</p>
+            </div>
 
             {passwordError && (
               <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-bold text-center">
@@ -960,11 +999,16 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
               <div>
                 <label className="block text-xs font-bold mb-1">{lang === 'ar' ? 'كلمة المرور الجديدة' : 'New Password'}</label>
                 <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} minLength={8}
+                  autoComplete="new-password"
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm" />
+                <p className="text-[10px] text-slate-400 font-bold mt-1">
+                  {lang === 'ar' ? '8 أحرف على الأقل' : 'At least 8 characters'}
+                </p>
               </div>
               <div>
-                <label className="block text-xs font-bold mb-1">{lang === 'ar' ? 'تأكيد كلمة المرور' : 'Confirm Password'}</label>
+                <label className="block text-xs font-bold mb-1">{lang === 'ar' ? 'تأكيد كلمة المرور' : 'Confirm New Password'}</label>
                 <input type="password" value={confirmNewPassword} onChange={(e) => setConfirmNewPassword(e.target.value)} minLength={8}
+                  autoComplete="new-password"
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm" />
               </div>
             </div>
@@ -973,7 +1017,7 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
               <button onClick={handleSetPassword} disabled={changingPassword}
                 className="flex-1 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow">
                 {changingPassword ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-                <span>{lang === 'ar' ? 'تعيين كلمة المرور' : 'Set Password'}</span>
+                <span>{lang === 'ar' ? 'تغيير كلمة المرور' : 'Change Password'}</span>
               </button>
               <button onClick={() => setPasswordModal(null)} className="px-6 py-3 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm">{t('cancel')}</button>
             </div>

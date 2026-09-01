@@ -22,13 +22,26 @@ Rotate any credential that may have been disclosed. Do not test against real stu
 ## Required production controls
 
 - HTTPS everywhere and supplied CSP/HSTS headers.
-- Current `schema.sql`, `homework-grading.sql`, and `bulk-messaging.sql` applied.
+- Current `schema.sql`, `homework-grading.sql`, `migration-features.sql`, `homework-subpoints.sql`, and `bulk-messaging.sql` applied.
 - Email confirmation/rate limits/password policy configured in Supabase.
 - Gateway auth configured; no wildcard origins or insecure-local/mock production mode.
 - Secrets stored in hosting secret manager and rotated periodically.
 - Separate least-privilege admin accounts; no shared credentials.
 - Backups, privacy/retention policy, consent/opt-out for messaging.
 - Dependency audit and tests before deployment.
+
+## Homework answer keys and submitted answers
+
+- `strip_assessment_answers()` removes every key spelling (`answer`, `correctAnswer`, `correct`, `correct_answer`, `key`, `modelAnswer`) from a question **and from each of its nested subpoints**. Students reading `homework_catalog` receive question text, options and points only.
+- Adding admin answer editing did not widen what students receive: they still see only their own answer and their own result.
+- `admin_update_submission_answer()` re-checks `is_admin()` in the database and is `REVOKE`d from `PUBLIC` and `anon`. Hiding the button is not the control.
+- The audit table `submission_answer_edits` has a `SELECT`-only policy for admins and a trigger that rejects `UPDATE`/`DELETE`, so the history is append-only.
+
+## Administrator password changes
+
+- Admins set a new student password through `admin_set_student_password()`, which is admin-gated in the database and writes only a bcrypt hash (`crypt(new_password, gen_salt('bf'))`) into `auth.users`.
+- The existing password is never retrieved, stored in plaintext, exposed as a hash to the frontend, or copied onto `profiles`. No service-role key is ever present in the browser.
+- The student self-service recovery flow (`resetPasswordForEmail`) is independent and unaffected.
 
 ## Known residual risks
 

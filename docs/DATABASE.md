@@ -8,6 +8,7 @@ Apply in Supabase SQL Editor:
 2. `homework-grading.sql` — grading helpers/RPCs and reporting view.
 3. `bulk-messaging.sql` — progress-report RPCs.
 4. `migration-features.sql` — multi-group homework, admin student management RPCs, attendance cancellation, paginated student listing, signup group validation.
+5. `homework-subpoints.sql` — nested MCQ subpoints, subpoint-aware marking, admin answer editing with an append-only audit trail.
 
 The scripts use `IF NOT EXISTS`, `CREATE OR REPLACE`, and policy/trigger recreation where possible, so they are safe to run more than once. Back up production before any migration and test on staging first.
 
@@ -170,14 +171,38 @@ Many-to-many junction for multi-group homework assignment:
 
 Unique `(assignment_id, group_id)`. When an assignment has entries in this table, only students in those groups can access it (in addition to the legacy `group_name` check). An empty table means the assignment is general (available to all students of the matching year).
 
+### `submission_answer_edits`
+
+Append-only audit trail written by `admin_update_submission_answer()` whenever an administrator changes a submitted answer.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | UUID | PK |
+| `submission_id` | UUID | FK submissions, cascade |
+| `assignment_id` | UUID | FK assignments, cascade |
+| `student_id` | UUID | FK profiles, cascade |
+| `question_id` | text | stable question id |
+| `subpoint_id` | text | NULL when a plain question was edited |
+| `previous_answer` | text | NULL when the item was unanswered |
+| `new_answer` | text | canonical option letter where options exist |
+| `score_before` / `score_after` | numeric(8,2) | the recalculated totals |
+| `changed_by` | UUID | FK profiles, the acting admin |
+| `created_at` | timestamptz | default now |
+
+RLS is enabled with a single `SELECT` policy for administrators. There is deliberately **no** insert/update/delete policy — the `SECURITY DEFINER` RPC is the only writer — and a `BEFORE UPDATE OR DELETE` trigger raises even for a caller that bypasses RLS, so the history cannot be rewritten or erased. Indexed on `(submission_id, created_at DESC)` and `(student_id, created_at DESC)`.
+
 ## Important functions
 
 - `is_admin()`, `is_active_student()` — non-recursive RLS helpers.
 - `can_access_assignment(uuid)` — publication/activity/year/group authorization (supports multi-group via `assignment_groups`).
 - `promote_to_admin(email)` — SQL-editor bootstrap or admin-only RPC.
-- `strip_assessment_answers(jsonb)` — removes answer-key fields.
+- `strip_assessment_answers(jsonb)` — removes answer-key fields from a question **and from each of its nested subpoints**.
 - `grade_assignment_submission(...)`, `grade_lesson_homework(...)` — authoritative markers.
 - `regrade_assignment(uuid)`, `regrade_lesson_homework(uuid)` — admin batch operations.
+- `ph_mark_answers(jsonb, jsonb)` — the shared marker; grades every nested subpoint independently and never double-counts a parent question.
+- `ph_roman(int)` — lowercase roman numeral (1 → `i`), matching `romanNumeral()` in `src/lib/grading.js`.
+- `ph_answer_node/_text`, `ph_subpoint_answer(...)` — read a student's answer from either the flat or the nested submission shape.
+- `admin_update_submission_answer(uuid, text, text, text)` — admin-only edit of one submitted answer; re-grades and audits.
 - `bulk_messaging_report(year)`, `student_progress_log(student)` — reporting RPCs.
 - `touch_updated_at()`, `stamp_grader()` — audit triggers.
 - `admin_update_student(...)` — securely updates student profile fields including email sync with auth.users.

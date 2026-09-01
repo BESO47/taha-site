@@ -197,6 +197,17 @@ Parameters:
 
 Returns totals, correct/incorrect/unanswered counts, score, total points, percentage, and breakdown. Errors include unauthenticated, inaccessible/unpublished homework, malformed/oversized answers, invalid file path, and already graded.
 
+`p_answers` accepts both shapes, which may be mixed inside one submission:
+
+```jsonc
+{
+  "q1": "A",                                        // plain question
+  "q2": { "answer": "", "subpoints": { "sp_a": "B", "sp_b": "C" } }  // nested subpoints
+}
+```
+
+A question with subpoints is worth the sum of its subpoint points; its own `points` is ignored. Each subpoint is marked on its own, so the breakdown carries a `subpoints` array with the roman `label`, student answer, key, mark and points per item.
+
 ### `grade_lesson_homework`
 
 Authenticated. Same marking result for legacy lesson homework. Active matching-year student or admin; one student submission attempt.
@@ -205,6 +216,44 @@ Authenticated. Same marking result for legacy lesson homework. Active matching-y
 ### `regrade_lesson_homework`
 
 Admin only. Recomputes all saved answer sheets from the current key in one database call.
+
+### `admin_update_submission_answer`
+
+**Admin only** — the database verifies `is_admin()`, and the function is revoked from `PUBLIC` and `anon`. This is the only path that can change an answer after a student has submitted.
+
+```json
+{
+  "p_submission_id": "uuid",
+  "p_question_id": "q2",
+  "p_subpoint_id": "sp_b",
+  "p_new_answer": "C"
+}
+```
+
+`p_subpoint_id` is `null` when editing a plain question. Questions and subpoints are resolved **by stable id**; an unknown id raises instead of falling back to a position. The new answer is validated against the item's real options.
+
+The function then re-marks the whole paper and returns the recalculated result:
+
+```json
+{
+  "ok": true,
+  "edit_id": "uuid",
+  "previous_answer": "A",
+  "new_answer": "C",
+  "score": 5, "total_points": 5, "percentage": 100,
+  "correct_count": 4, "incorrect_count": 0, "unanswered_count": 0,
+  "status": "graded",
+  "answers": {}, "breakdown": []
+}
+```
+
+Every call appends a row to `submission_answer_edits` (student, submission, question, subpoint, previous/new answer, admin, score before/after, timestamp). That table is readable by admins only and rejects `UPDATE`/`DELETE`. A paper with no answer key keeps its current status rather than being promoted to `graded`.
+
+Errors: not authenticated, not an administrator, submission/question/subpoint not found, answer not among the options, unchanged answer, oversized payload.
+
+### `admin_set_student_password`
+
+Admin only. Sets a new password for a student by writing a bcrypt hash to `auth.users.encrypted_password`. The existing password is never read or returned, and admin accounts cannot be changed through it. `admin_initiate_password_reset(uuid)` returns the target email so the client can start Supabase's own recovery flow.
 
 ### `bulk_messaging_report`
 

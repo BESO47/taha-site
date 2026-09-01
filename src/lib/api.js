@@ -1,6 +1,8 @@
 import { supabase, isSupabaseConfigured } from './supabase'
 import { DEFAULT_GROUPS } from '../data/catalog'
-import { gradeSubmissionAgainstKey, summarizeGrades } from './grading'
+import {
+  gradeSubmissionAgainstKey, summarizeGrades, OPTION_LETTERS, romanNumeral,
+} from './grading'
 
 const MAX_SUBMISSION_FILE_BYTES = 10 * 1024 * 1024 // 10 MB
 const SUBMISSION_FILE_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp'])
@@ -475,19 +477,126 @@ export async function upsertGrade({ quizId, studentId, score, notes }) {
 // working unchanged. Each question = { id, question, options[4], answer,
 // points }. Total points = sum of question points (fallback: max_score).
 
+/**
+ * Total marks of a homework entry.
+ *
+ * A question that carries subpoints is worth the SUM of its subpoint
+ * points — its own `points` value is ignored, so converting a question
+ * into a nested one can never inflate (or double count) the total.
+ * Mirrors `ph_mark_answers()` in homework-subpoints.sql.
+ */
 export function computeHomeworkTotalPoints(questions = []) {
   const arr = Array.isArray(questions) ? questions : []
   if (arr.length === 0) return 0
   let sum = 0
   for (const q of arr) {
-    if (q.subpoints?.length) {
-      // If question has subpoints, total = sum of subpoint points
-      sum += q.subpoints.reduce((acc, sp) => acc + (Number(sp.points) || 0), 0)
+    const subs = Array.isArray(q?.subpoints) ? q.subpoints : []
+    if (subs.length) {
+      sum += subs.reduce((acc, sp) => acc + (Number(sp?.points) > 0 ? Number(sp.points) : 1), 0)
     } else {
-      sum += Number(q.points) || 0
+      sum += Number(q?.points) || 0
     }
   }
   return Math.round(sum * 100) / 100
+}
+
+/**
+ * Canonical shape written to `assignments.questions`.
+ *
+ * Every subpoint is a COMPLETE MCQ — text, four options, one correct
+ * answer and its own points — so an incomplete subpoint can never reach
+ * the database. A question keeps its own options/answer only when it has
+ * no subpoints, exactly as the editor presents it.
+ */
+function canonicalizeQuestions(questions = []) {
+  return (Array.isArray(questions) ? questions : []).map((q) => {
+    const subs = Array.isArray(q?.subpoints) ? q.subpoints.filter(Boolean) : []
+    const base = {
+      id: q.id,
+      // `question` is the canonical field; the marker also accepts the
+      // historical `text` so previously stored homework keeps working.
+      question: String(q.question ?? q.text ?? '').trim(),
+      points: Number(q.points) > 0 ? Number(q.points) : 1,
+    }
+
+    if (subs.length) {
+      base.subpoints = subs.map((sp, i) => ({
+        id: sp.id || `sp_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`,
+        question: String(sp.question ?? sp.text ?? '').trim(),
+        options: (Array.isArray(sp.options) ? sp.options : []).slice(0, 4).map(
+          (o, oi) => String(o ?? '').trim() || `${OPTION_LETTERS[oi]}) `
+        ),
+        answer: String(sp.answer ?? sp.correctAnswer ?? '').trim(),
+        points: Number(sp.points) > 0 ? Number(sp.points) : 1,
+      }))
+    } else {
+      if (Array.isArray(q.options) && q.options.length) {
+        base.options = q.options.slice(0, 4).map(
+          (o, oi) => String(o ?? '').trim() || `${OPTION_LETTERS[oi]}) `
+        )
+      }
+      const answer = String(q.answer ?? q.correctAnswer ?? '').trim()
+      if (answer) base.answer = answer
+    }
+    return base
+  })
+}
+
+/**
+ * Client-side guard used by the admin editor before saving: an incomplete
+ * question or subpoint is rejected here so it never reaches the database,
+ * and the marking engine never has to cope with a half-built MCQ.
+ *
+ * @returns {string|null} a human readable problem, or null when valid
+ */
+export function validateHomeworkQuestions(questions = [], lang = 'en') {
+  const ar = lang === 'ar'
+  const list = Array.isArray(questions) ? questions : []
+  if (!list.length) return ar ? 'أضف سؤالاً واحداً على الأقل.' : 'Add at least one question.'
+
+  for (let i = 0; i < list.length; i += 1) {
+    const q = list[i]
+    const n = i + 1
+    if (!String(q.question ?? q.text ?? '').trim()) {
+      return ar ? `السؤال ${n}: اكتب نص السؤال.` : `Question ${n}: the question text is required.`
+    }
+
+    const subs = Array.isArray(q.subpoints) ? q.subpoints.filter(Boolean) : []
+    if (!subs.length) {
+      if (!(Number(q.points) > 0)) {
+        return ar ? `السؤال ${n}: الدرجة يجب أن تكون أكبر من صفر.` : `Question ${n}: points must be greater than zero.`
+      }
+      if (!String(q.answer ?? q.correctAnswer ?? '').trim()) {
+        return ar ? `السؤال ${n}: اختر الإجابة الصحيحة.` : `Question ${n}: select the correct answer.`
+      }
+      continue
+    }
+
+    for (let j = 0; j < subs.length; j += 1) {
+      const sp = subs[j]
+      const label = romanNumeral(j + 1)
+      if (!String(sp.question ?? sp.text ?? '').trim()) {
+        return ar ? `السؤال ${n} (${label}): اكتب نص النقطة الفرعية.` : `Question ${n} (${label}): the subpoint text is required.`
+      }
+      const opts = Array.isArray(sp.options) ? sp.options : []
+      if (opts.length !== 4 || opts.some((o) => !String(o ?? '').trim())) {
+        return ar
+          ? `السؤال ${n} (${label}): أكمل الاختيارات الأربعة.`
+          : `Question ${n} (${label}): all four options are required.`
+      }
+      if (!['A', 'B', 'C', 'D'].includes(String(sp.answer ?? '').trim())) {
+        return ar
+          ? `السؤال ${n} (${label}): حدد الإجابة الصحيحة.`
+          : `Question ${n} (${label}): select exactly one correct answer.`
+      }
+      if (!(Number(sp.points) > 0)) {
+        return ar
+          ? `السؤال ${n} (${label}): الدرجة يجب أن تكون أكبر من صفر.`
+          : `Question ${n} (${label}): points must be greater than zero.`
+      }
+    }
+  }
+  return null
 }
 
 export function normalizeHomeworkEntry(row = {}) {
@@ -610,26 +719,7 @@ export async function fetchAssignments({ yearId = null } = {}) {
 export async function createHomeworkEntry(payload) {
   const questions = Array.isArray(payload.questions) ? payload.questions : []
   const totalPoints = computeHomeworkTotalPoints(questions) || Number(payload.maxScore) || 0
-  // Support both subpoints and flat questions
-  const flatQuestions = questions.map((q) => {
-    const base = {
-      id: q.id,
-      question: q.question?.trim() || '',
-      points: Number(q.points) || 1,
-    }
-    if (q.options?.length) base.options = q.options
-    if (q.answer) base.answer = q.answer
-    if (q.subpoints?.length) {
-      base.subpoints = q.subpoints.map((sp) => ({
-        id: sp.id,
-        text: sp.text?.trim() || '',
-        points: Number(sp.points) || 1,
-        ...(sp.options?.length ? { options: sp.options } : {}),
-        ...(sp.answer ? { answer: sp.answer } : {}),
-      }))
-    }
-    return base
-  })
+  const flatQuestions = canonicalizeQuestions(questions)
   const row = {
     title: String(payload.title || '').trim(),
     description: String(payload.description || '').trim() || null,
@@ -680,25 +770,7 @@ export async function createHomeworkEntry(payload) {
 export async function updateHomeworkEntry(id, payload) {
   const questions = Array.isArray(payload.questions) ? payload.questions : []
   const totalPoints = computeHomeworkTotalPoints(questions) || Number(payload.maxScore) || 0
-  const flatQuestions = questions.map((q) => {
-    const base = {
-      id: q.id,
-      question: q.question?.trim() || '',
-      points: Number(q.points) || 1,
-    }
-    if (q.options?.length) base.options = q.options
-    if (q.answer) base.answer = q.answer
-    if (q.subpoints?.length) {
-      base.subpoints = q.subpoints.map((sp) => ({
-        id: sp.id,
-        text: sp.text?.trim() || '',
-        points: Number(sp.points) || 1,
-        ...(sp.options?.length ? { options: sp.options } : {}),
-        ...(sp.answer ? { answer: sp.answer } : {}),
-      }))
-    }
-    return base
-  })
+  const flatQuestions = canonicalizeQuestions(questions)
   const row = {
     title: String(payload.title || '').trim(),
     description: String(payload.description || '').trim() || null,
@@ -996,6 +1068,88 @@ export async function upsertHomeworkSubmissionGrade({
   }
 
   return saveLocalAssignmentSubmission(assignmentId, payload)
+}
+
+/**
+ * ================= ADMIN: change ONE submitted answer ================
+ *
+ * The whole flow is server-side: the RPC verifies `is_admin()` in the
+ * database, rewrites only the targeted question/subpoint answer, re-marks
+ * the entire paper and records the change in `submission_answer_edits`.
+ *
+ * The client therefore never recomputes a score and never posts one — a
+ * student replaying this call is rejected by the database itself.
+ *
+ * @param {{ submissionId:string, questionId:string,
+ *           subpointId?:string|null, answer:string }} input
+ * @returns {Promise<{ score:number, totalPoints:number, percentage:number,
+ *   correctCount:number, incorrectCount:number, status:string,
+ *   answers:object, breakdown:Array, previousAnswer:string }>}
+ */
+export async function adminUpdateSubmissionAnswer({ submissionId, questionId, subpointId = null, answer }) {
+  if (!submissionId) throw new Error('A submission is required')
+  if (!questionId) throw new Error('A question is required')
+  if (answer === undefined || answer === null || String(answer).trim() === '') {
+    throw new Error('A new answer is required')
+  }
+
+  if (isSupabaseConfigured()) {
+    const { data, error } = await supabase.rpc('admin_update_submission_answer', {
+      p_submission_id: submissionId,
+      p_question_id: String(questionId),
+      p_subpoint_id: subpointId ? String(subpointId) : null,
+      p_new_answer: String(answer),
+    })
+    if (error) throw new Error(error.message || 'The answer could not be changed')
+    const row = Array.isArray(data) ? data[0] : data
+    if (!row?.ok) throw new Error('The answer could not be changed')
+
+    return {
+      editId: row.edit_id,
+      previousAnswer: row.previous_answer ?? '',
+      newAnswer: row.new_answer,
+      score: Number(row.score) || 0,
+      totalPoints: Number(row.total_points) || 0,
+      correctCount: Number(row.correct_count) || 0,
+      incorrectCount: Number(row.incorrect_count) || 0,
+      unansweredCount: Number(row.unanswered_count) || 0,
+      percentage: Math.round(Number(row.percentage)) || 0,
+      status: row.status,
+      answers: row.answers || {},
+      breakdown: row.breakdown || [],
+    }
+  }
+
+  throw new Error('Changing a submitted answer requires Supabase')
+}
+
+/**
+ * Audit trail for a submission: who changed which answer, from what to
+ * what, and when. Read-only, and visible to administrators only — the
+ * table has no write policy and its rows are append-only.
+ */
+export async function fetchSubmissionAnswerEdits(submissionId) {
+  if (!submissionId) return []
+  if (!isSupabaseConfigured()) return []
+
+  const { data, error } = await supabase
+    .from('submission_answer_edits')
+    .select('id, question_id, subpoint_id, previous_answer, new_answer, score_before, score_after, created_at, changed_by, editor:changed_by (full_name)')
+    .eq('submission_id', submissionId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return (data || []).map((row) => ({
+    id: row.id,
+    questionId: row.question_id,
+    subpointId: row.subpoint_id,
+    previousAnswer: row.previous_answer || '',
+    newAnswer: row.new_answer,
+    scoreBefore: row.score_before == null ? null : Number(row.score_before),
+    scoreAfter: row.score_after == null ? null : Number(row.score_after),
+    changedBy: row.changed_by,
+    editorName: row.editor?.full_name || '',
+    createdAt: row.created_at,
+  }))
 }
 
 /**
