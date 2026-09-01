@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { User, Phone, Lock, Eye, EyeOff, GraduationCap, MapPin, Sparkles, UserCheck, ArrowRight, ArrowLeft } from 'lucide-react'
+import { User, Phone, Lock, Eye, EyeOff, GraduationCap, MapPin, Sparkles, UserCheck, ArrowRight, ArrowLeft, Layers } from 'lucide-react'
 import { YEARS, GOVERNORATES } from '../data/catalog'
 import { supabase } from '../lib/supabase'
 import { normalizePhone, validatePhone } from '../lib/whatsapp'
 import { useLanguage } from '../lib/i18n.jsx'
+import { fetchGroups } from '../lib/api'
 
 export default function RegisterPage() {
   const { lang, t } = useLanguage()
@@ -22,6 +23,27 @@ export default function RegisterPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const [isSuccess, setIsSuccess] = useState(false)
+
+  // Group selection
+  const [allGroups, setAllGroups] = useState([])
+  const [selectedGroupId, setSelectedGroupId] = useState('')
+  const [loadingGroups, setLoadingGroups] = useState(false)
+
+  // Load groups for selected year
+  useEffect(() => {
+    let cancelled = false
+    setLoadingGroups(true)
+    setSelectedGroupId('') // Reset when year changes
+    fetchGroups()
+      .then((groups) => {
+        if (!cancelled) setAllGroups(groups.filter((g) => String(g.year_id) === String(selectedYear)))
+      })
+      .catch(() => { if (!cancelled) setAllGroups([]) })
+      .finally(() => { if (!cancelled) setLoadingGroups(false) })
+    return () => { cancelled = true }
+  }, [selectedYear])
+
+  const availableGroups = allGroups
 
   const ArrowIcon = lang === 'ar' ? ArrowLeft : ArrowRight
 
@@ -74,6 +96,7 @@ export default function RegisterPage() {
             parent_phone: normalizePhone(guardianPhone.normalized),
             year_id: String(selectedYear),
             governorate,
+            ...(selectedGroupId ? { group_id: selectedGroupId } : {}),
           },
         },
       })
@@ -287,6 +310,34 @@ export default function RegisterPage() {
                   </select>
                   <MapPin className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500 pointer-events-none" />
                 </div>
+              </div>
+
+              {/* Group Selection */}
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                  {t('studentGroup')} {t('optional')}
+                </label>
+                <div className="relative">
+                  <select
+                    value={selectedGroupId}
+                    onChange={(e) => setSelectedGroupId(e.target.value)}
+                    disabled={loadingGroups}
+                    className="w-full px-4 py-3.5 ltr:pl-11 rtl:pr-11 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth appearance-none disabled:opacity-60"
+                  >
+                    <option value="">{loadingGroups ? (lang === 'ar' ? 'جاري التحميل...' : 'Loading...') : (lang === 'ar' ? 'بدون مجموعة (يحددها المدرس)' : 'No group (teacher assigns)')}</option>
+                    {availableGroups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Layers className="w-5 h-5 absolute top-4 ltr:left-3.5 rtl:right-3.5 text-slate-400 dark:text-zinc-500 pointer-events-none" />
+                </div>
+                {availableGroups.length === 0 && !loadingGroups && (
+                  <p className="mt-1.5 text-xs text-slate-400 dark:text-zinc-500">
+                    {lang === 'ar' ? 'لا توجد مجموعات متاحة لهذا الصف بعد.' : 'No groups available for this grade yet.'}
+                  </p>
+                )}
               </div>
 
               {/* Password */}

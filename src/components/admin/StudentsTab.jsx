@@ -1,12 +1,19 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Users, Search, Loader2, TrendingUp, X, Plus, Trash2, Tag, Check, Layers, ClipboardList } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import {
+  Users, Search, Loader2, TrendingUp, X, Plus, Trash2, Tag, Check, Layers,
+  ClipboardList, Edit3, Lock, ChevronLeft, ChevronRight, CheckSquare, Square,
+  AlertTriangle, RefreshCw, UserCheck, UserX, Mail, Phone, MapPin, Calendar,
+} from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
-import { YEARS } from '../../data/catalog'
+import { YEARS, GOVERNORATES } from '../../data/catalog'
 import { supabase } from '../../lib/supabase'
 import {
   fetchStudentAnalytics, fetchGradesForStudent, fetchAttendanceForStudent,
   fetchGroups, createGroup, deleteGroup, updateStudentGroup,
   fetchHomeworkEntries, fetchSubmissionsForStudent,
+  fetchStudentsPaginated, adminUpdateStudent, adminSetStudentPassword,
+  bulkUpdateStudentGroup, bulkUpdateStudentStatus,
+  cancelAttendance,
 } from '../../lib/api'
 import WhatsAppReportButton from '../WhatsAppReportButton.jsx'
 import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
@@ -20,12 +27,14 @@ function Bar({ value, color = 'bg-yellow-400' }) {
   )
 }
 
+const PAGE_SIZE = 20
+
 export default function StudentsTab({ students = [], analytics = [], onRefresh }) {
   const { t, lang } = useLanguage()
   const [search, setSearch] = useState('')
   const [yearFilter, setYearFilter] = useState('all')
-  // Universal group filter (Feature 3) — shared GroupFilterSelect + ?groupId=
   const [groupId, setGroupId] = useState(() => getInitialGroupFilter())
+  const [statusFilter, setStatusFilter] = useState('all') // all | active | suspended
 
   // Group Management State
   const [groups, setGroups] = useState([])
@@ -34,13 +43,36 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
   const [newGroupName, setNewGroupName] = useState('')
   const [newGroupYear, setNewGroupYear] = useState('5')
   const [addingGroup, setAddingGroup] = useState(false)
-  const [updatingStudentId, setUpdatingStudentId] = useState(null)
   const [successMsg, setSuccessMsg] = useState('')
 
-  // Detail Modal State
+  // Pagination
+  const [page, setPage] = useState(1)
+  const [paginatedData, setPaginatedData] = useState(null)
+  const [loadingPage, setLoadingPage] = useState(false)
+
+  // Bulk Selection
+  const [selected, setSelected] = useState(new Set())
+
+  // Detail / Edit / Password Modals
   const [detail, setDetail] = useState(null)
   const [detailData, setDetailData] = useState(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
+  const [editing, setEditing] = useState(null)
+  const [editForm, setEditForm] = useState({})
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [passwordModal, setPasswordModal] = useState(null)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [changingPassword, setChangingPassword] = useState(false)
+  const [passwordError, setPasswordError] = useState('')
+
+  // Bulk Action Modal
+  const [bulkAction, setBulkAction] = useState(null) // 'group' | 'activate' | 'suspend'
+  const [bulkGroupId, setBulkGroupId] = useState('')
+  const [bulkSaving, setBulkSaving] = useState(false)
+
+  // Attendance Cancel
+  const [cancellingAttendance, setCancellingAttendance] = useState(null)
 
   const loadGroups = useCallback(async () => {
     try {
@@ -51,29 +83,43 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
     }
   }, [])
 
-  useEffect(() => {
-    loadGroups()
-  }, [loadGroups])
+  useEffect(() => { loadGroups() }, [loadGroups])
 
   const analyticsFor = useCallback(
     (id) => analytics.find((a) => a.student_id === id) || {},
     [analytics]
   )
 
-  const filtered = students.filter((s) => {
-    const q = search.toLowerCase()
-    const matchQ = !q || s.full_name?.toLowerCase().includes(q) || (s.phone || '').includes(search)
-    const matchY = yearFilter === 'all' || s.year_id === yearFilter
-    const sGroup = s.group_name || s.groupName || ''
-    const matchG =
-      groupId === 'all' || groupId === null
-        ? true
-        : groupId === 'none'
-        ? !sGroup || sGroup === ''
-        : selectedGroupName && sGroup === selectedGroupName
+  // Server-side paginated student loading
+  const loadPage = useCallback(async () => {
+    setLoadingPage(true)
+    try {
+      const result = await fetchStudentsPaginated({
+        page,
+        pageSize: PAGE_SIZE,
+        search: search || null,
+        yearId: yearFilter !== 'all' ? yearFilter : null,
+        groupId: groupId !== 'all' && groupId !== 'none' ? groupId : null,
+        isActive: statusFilter === 'all' ? null : statusFilter === 'active',
+      })
+      setPaginatedData(result)
+    } catch (err) {
+      console.error('Pagination failed:', err)
+      // Fallback to client-side
+      setPaginatedData({ data: students, total: students.length, page: 1, pageSize: students.length, totalPages: 1 })
+    } finally {
+      setLoadingPage(false)
+    }
+  }, [page, search, yearFilter, groupId, statusFilter, students])
 
-    return matchQ && matchY && matchG
-  })
+  useEffect(() => { loadPage() }, [loadPage])
+
+  // Reset page when filters change
+  useEffect(() => { setPage(1) }, [search, yearFilter, groupId, statusFilter])
+
+  const displayedStudents = paginatedData?.data || students
+  const totalStudents = paginatedData?.total || students.length
+  const totalPages = paginatedData?.totalPages || 1
 
   const toggleActive = async (s) => {
     try {
@@ -83,23 +129,22 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
         .eq('id', s.id)
       if (error) throw error
       onRefresh?.()
+      loadPage()
     } catch (err) {
       alert(err.message)
     }
   }
 
   const handleGroupChange = async (studentId, newGroupId) => {
-    setUpdatingStudentId(studentId)
     try {
       const selectedGroup = groups.find((group) => group.id === newGroupId) || null
       await updateStudentGroup(studentId, selectedGroup)
       setSuccessMsg(t('groupUpdatedSuccess'))
       setTimeout(() => setSuccessMsg(''), 3000)
       onRefresh?.()
+      loadPage()
     } catch (err) {
       alert(err.message)
-    } finally {
-      setUpdatingStudentId(null)
     }
   }
 
@@ -128,6 +173,7 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
     }
   }
 
+  // Student Detail
   const openDetail = async (s) => {
     setDetail(s)
     setLoadingDetail(true)
@@ -147,6 +193,143 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
     }
   }
 
+  // Edit Student
+  const openEdit = (s) => {
+    setEditing(s)
+    setEditForm({
+      fullName: s.full_name || '',
+      email: s.email || '',
+      phone: s.phone || '',
+      parentPhone: s.parent_phone || '',
+      yearId: s.year_id || '5',
+      groupId: s.group_id || '',
+      governorate: s.governorate || '',
+      isActive: s.is_active !== false,
+    })
+  }
+
+  const handleSaveEdit = async () => {
+    if (!editing) return
+    setSavingEdit(true)
+    try {
+      await adminUpdateStudent(editing.id, {
+        fullName: editForm.fullName,
+        email: editForm.email,
+        phone: editForm.phone,
+        parentPhone: editForm.parentPhone,
+        yearId: editForm.yearId,
+        groupId: editForm.groupId || null,
+        governorate: editForm.governorate,
+        isActive: editForm.isActive,
+      })
+      setSuccessMsg(lang === 'ar' ? 'تم حفظ التعديلات بنجاح' : 'Changes saved successfully')
+      setTimeout(() => setSuccessMsg(''), 3000)
+      setEditing(null)
+      onRefresh?.()
+      loadPage()
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  // Password Reset
+  const openPasswordReset = (s) => {
+    setPasswordModal(s)
+    setNewPassword('')
+    setConfirmNewPassword('')
+    setPasswordError('')
+  }
+
+  const handleSetPassword = async () => {
+    if (!passwordModal) return
+    setPasswordError('')
+    if (newPassword.length < 8) {
+      setPasswordError(lang === 'ar' ? 'كلمة المرور يجب أن تكون 8 أحرف على الأقل' : 'Password must be at least 8 characters')
+      return
+    }
+    if (newPassword !== confirmNewPassword) {
+      setPasswordError(lang === 'ar' ? 'كلمتا المرور غير متطابقتين' : 'Passwords do not match')
+      return
+    }
+    setChangingPassword(true)
+    try {
+      await adminSetStudentPassword(passwordModal.id, newPassword)
+      setSuccessMsg(lang === 'ar' ? 'تم تغيير كلمة المرور بنجاح' : 'Password changed successfully')
+      setTimeout(() => setSuccessMsg(''), 3000)
+      setPasswordModal(null)
+    } catch (err) {
+      setPasswordError(err.message)
+    } finally {
+      setChangingPassword(false)
+    }
+  }
+
+  // Bulk Selection
+  const toggleSelect = (id) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectAllVisible = () => {
+    const ids = displayedStudents.map((s) => s.id)
+    setSelected(new Set(ids))
+  }
+
+  const clearSelection = () => setSelected(new Set())
+
+  const handleBulkAction = async () => {
+    const ids = Array.from(selected)
+    if (!ids.length) return
+    setBulkSaving(true)
+    try {
+      if (bulkAction === 'group') {
+        const count = await bulkUpdateStudentGroup(ids, bulkGroupId || null)
+        setSuccessMsg(lang === 'ar' ? `تم تحديث مجموعة ${count} طالب` : `Updated group for ${count} students`)
+      } else if (bulkAction === 'activate') {
+        const count = await bulkUpdateStudentStatus(ids, true)
+        setSuccessMsg(lang === 'ar' ? `تم تفعيل ${count} طالب` : `Activated ${count} students`)
+      } else if (bulkAction === 'suspend') {
+        const count = await bulkUpdateStudentStatus(ids, false)
+        setSuccessMsg(lang === 'ar' ? `تم إيقاف ${count} طالب` : `Suspended ${count} students`)
+      }
+      setTimeout(() => setSuccessMsg(''), 3000)
+      setBulkAction(null)
+      clearSelection()
+      onRefresh?.()
+      loadPage()
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setBulkSaving(false)
+    }
+  }
+
+  // Attendance cancel from detail modal
+  const handleCancelAttendance = async (studentId, sessionDate) => {
+    if (!confirm(lang === 'ar' ? 'هل أنت متأكد من حذف سجل الحضور لهذا التاريخ؟' : 'Are you sure you want to delete this attendance record?')) return
+    setCancellingAttendance(sessionDate)
+    try {
+      await cancelAttendance(studentId, sessionDate)
+      setSuccessMsg(lang === 'ar' ? 'تم حذف سجل الحضور' : 'Attendance record deleted')
+      setTimeout(() => setSuccessMsg(''), 3000)
+      // Refresh detail data
+      if (detail) {
+        const att = await fetchAttendanceForStudent(studentId)
+        setDetailData((prev) => prev ? { ...prev, attendance: att } : prev)
+      }
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setCancellingAttendance(null)
+    }
+  }
+
   return (
     <div className="space-y-6 font-ibm">
       {successMsg && (
@@ -162,7 +345,7 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
           <div className="flex items-center gap-2">
             <Users className="w-5 h-5 text-yellow-500" />
             <h3 className="font-bold text-lg">
-              <span>{t('adminStudents')} ({filtered.length})</span>
+              <span>{t('adminStudents')} ({totalStudents})</span>
             </h3>
           </div>
 
@@ -177,8 +360,23 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
           </div>
         </div>
 
-        {/* Filter Controls Bar */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {/* Filter Controls */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          {/* Search */}
+          <div className="lg:col-span-2">
+            <label className="block text-xs font-bold text-slate-500 mb-1">{lang === 'ar' ? 'البحث' : 'Search'}</label>
+            <div className="relative w-full">
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={lang === 'ar' ? 'ابحث بالاسم أو البريد أو الهاتف...' : 'Search name, email or phone...'}
+                className="w-full px-4 py-2.5 ltr:pl-10 rtl:pr-10 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs"
+              />
+              <Search className="w-4 h-4 absolute top-3 ltr:left-3.5 rtl:right-3.5 text-slate-400" />
+            </div>
+          </div>
+
           {/* Grade Filter */}
           <div>
             <label className="block text-xs font-bold text-slate-500 mb-1">{t('gradeLabel')}</label>
@@ -196,77 +394,160 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
             </select>
           </div>
 
-          {/* Universal Group Filter (Feature 3 — shared GroupFilterSelect) */}
+          {/* Group Filter */}
           <div>
             <GroupFilterSelect value={groupId} onChange={setGroupId} groups={groups} includeNone />
           </div>
 
-          {/* Name / Phone Search */}
+          {/* Status Filter */}
           <div>
-            <label className="block text-xs font-bold text-slate-500 mb-1">{lang === 'ar' ? 'البحث' : 'Search'}</label>
-            <div className="relative w-full">
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={lang === 'ar' ? 'ابحث بالاسم أو الهاتف...' : 'Search name or phone...'}
-                className="w-full px-4 py-2.5 ltr:pl-10 rtl:pr-10 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs"
-              />
-              <Search className="w-4 h-4 absolute top-3 ltr:left-3.5 rtl:right-3.5 text-slate-400" />
-            </div>
+            <label className="block text-xs font-bold text-slate-500 mb-1">{lang === 'ar' ? 'الحالة' : 'Status'}</label>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs font-bold"
+            >
+              <option value="all">{lang === 'ar' ? 'الكل' : 'All'}</option>
+              <option value="active">{lang === 'ar' ? 'مفعّل' : 'Active'}</option>
+              <option value="suspended">{lang === 'ar' ? 'موقوف' : 'Suspended'}</option>
+            </select>
           </div>
         </div>
 
+        {/* Bulk Actions Bar */}
+        {selected.size > 0 && (
+          <div className="flex flex-wrap items-center gap-2 p-3 rounded-2xl bg-yellow-400/10 border border-yellow-400/30">
+            <span className="text-xs font-bold text-yellow-700 dark:text-yellow-300">
+              {selected.size} {lang === 'ar' ? 'محدد' : 'selected'}
+            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => setBulkAction('group')}
+                className="px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 text-xs font-bold"
+              >
+                {lang === 'ar' ? 'تعيين مجموعة' : 'Assign Group'}
+              </button>
+              <button
+                onClick={() => setBulkAction('activate')}
+                className="px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-xs font-bold"
+              >
+                {lang === 'ar' ? 'تفعيل' : 'Activate'}
+              </button>
+              <button
+                onClick={() => setBulkAction('suspend')}
+                className="px-3 py-1.5 rounded-lg bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs font-bold"
+              >
+                {lang === 'ar' ? 'إيقاف' : 'Suspend'}
+              </button>
+              <button onClick={clearSelection} className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold">
+                {lang === 'ar' ? 'إلغاء التحديد' : 'Clear'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Select All / Pagination Controls */}
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={selectAllVisible}
+              className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold flex items-center gap-1.5"
+            >
+              <CheckSquare className="w-3.5 h-3.5" />
+              {lang === 'ar' ? 'تحديد الكل' : 'Select All'}
+            </button>
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="p-2 rounded-lg bg-slate-100 dark:bg-zinc-800 disabled:opacity-30 text-slate-600 dark:text-zinc-300"
+              >
+                {lang === 'ar' ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+              </button>
+              <span className="text-xs font-bold text-slate-500">
+                {page} / {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="p-2 rounded-lg bg-slate-100 dark:bg-zinc-800 disabled:opacity-30 text-slate-600 dark:text-zinc-300"
+              >
+                {lang === 'ar' ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Student Cards List */}
-        {filtered.length === 0 ? (
+        {loadingPage ? (
+          <div className="py-12 flex justify-center"><Loader2 className="w-7 h-7 animate-spin text-yellow-500" /></div>
+        ) : displayedStudents.length === 0 ? (
           <p className="text-center text-sm text-slate-500 py-10">— {t('noStudentsFound')} —</p>
         ) : (
           <div className="space-y-3">
-            {filtered.map((s) => {
+            {displayedStudents.map((s) => {
               const a = analyticsFor(s.id)
               const studentGroupId = s.group_id || groups.find(
                 (group) => group.name === (s.group_name || s.groupName) && String(group.year_id) === String(s.year_id)
               )?.id || ''
+              const isSelected = selected.has(s.id)
 
               return (
                 <div
                   key={s.id}
-                  className="p-4 rounded-2xl bg-slate-50 dark:bg-black/50 border border-slate-100 dark:border-zinc-800 space-y-3 hover:border-yellow-400/40 transition"
+                  className={`p-4 rounded-2xl border space-y-3 transition ${
+                    isSelected
+                      ? 'bg-yellow-400/5 border-yellow-400/50 dark:bg-yellow-400/5'
+                      : 'bg-slate-50 dark:bg-black/50 border-slate-100 dark:border-zinc-800 hover:border-yellow-400/40'
+                  }`}
                 >
                   <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                    {/* Student Basic Info */}
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <button
-                          onClick={() => openDetail(s)}
-                          className="font-bold text-sm hover:text-yellow-500 transition text-start"
-                        >
-                          {s.full_name}
-                        </button>
-                        <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-slate-200 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 font-bold">
-                          {lang === 'ar'
-                            ? YEARS.find((y) => y.id === s.year_id)?.shortTitleAr
-                            : YEARS.find((y) => y.id === s.year_id)?.shortTitle}
-                        </span>
+                    {/* Checkbox + Student Basic Info */}
+                    <div className="flex items-start gap-3 min-w-0">
+                      <button
+                        onClick={() => toggleSelect(s.id)}
+                        className="mt-1 shrink-0 text-yellow-500 hover:text-yellow-600"
+                        aria-label={isSelected ? 'Deselect' : 'Select'}
+                      >
+                        {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5 text-slate-300 dark:text-zinc-600" />}
+                      </button>
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            onClick={() => openDetail(s)}
+                            className="font-bold text-sm hover:text-yellow-500 transition text-start"
+                          >
+                            {s.full_name}
+                          </button>
+                          <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-slate-200 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 font-bold">
+                            {lang === 'ar'
+                              ? YEARS.find((y) => y.id === s.year_id)?.shortTitleAr
+                              : YEARS.find((y) => y.id === s.year_id)?.shortTitle}
+                          </span>
+                          {s.email && (
+                            <span className="text-[11px] text-slate-400 font-mono truncate max-w-[200px]" dir="ltr">
+                              {s.email}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-500 font-mono" dir="ltr">
+                          {s.phone} {s.parent_phone ? `· ${lang === 'ar' ? 'ولي الأمر' : 'Guardian'}: ${s.parent_phone}` : ''}
+                        </p>
                       </div>
-                      <p className="text-[11px] text-slate-500 font-mono" dir="ltr">
-                        {s.phone} {s.parent_phone ? `· ولي الأمر: ${s.parent_phone}` : ''}
-                      </p>
                     </div>
 
                     {/* Group Selector & Student Status Actions */}
                     <div className="flex items-center gap-2.5 flex-wrap">
-                      {/* =========================================================================
-                          FEATURE 3: INLINE GROUP DROPDOWN SELECTOR
-                         ========================================================================= */}
                       <div className="flex items-center gap-1.5 bg-white dark:bg-zinc-900 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-zinc-700">
                         <Layers className="w-3.5 h-3.5 text-yellow-500 shrink-0" />
-                        <span className="text-[10px] font-bold text-slate-400">{t('groupCol')}:</span>
                         <select
                           value={studentGroupId}
-                          disabled={updatingStudentId === s.id}
                           onChange={(e) => handleGroupChange(s.id, e.target.value)}
-                          className="bg-transparent text-xs font-bold text-slate-800 dark:text-zinc-200 focus:outline-none cursor-pointer"
+                          className="bg-transparent text-xs font-bold text-slate-800 dark:text-zinc-200 focus:outline-none cursor-pointer max-w-[140px]"
                         >
                           <option value="">{t('noGroupAssigned')}</option>
                           {groups
@@ -277,7 +558,6 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                               </option>
                             ))}
                         </select>
-                        {updatingStudentId === s.id && <Loader2 className="w-3 h-3 animate-spin text-yellow-500" />}
                       </div>
 
                       <span
@@ -289,6 +569,14 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                       >
                         {s.is_active ? '🟢' : '🔴'}
                       </span>
+
+                      <button
+                        onClick={() => openEdit(s)}
+                        className="p-2 rounded-lg bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 hover:text-yellow-500 transition"
+                        title={t('edit')}
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
 
                       <button
                         onClick={() => toggleActive(s)}
@@ -336,104 +624,69 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
       {showManageGroups && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="bg-white dark:bg-zinc-900 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-lg max-h-[90vh] sm:max-h-[85vh] overflow-y-auto shadow-2xl border border-slate-200 dark:border-zinc-800">
-            {/* Sticky modal header */}
             <div className="sticky top-0 z-10 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md flex items-center justify-between border-b border-slate-200 dark:border-zinc-800 px-6 py-4">
               <h3 className="font-bold text-lg flex items-center gap-2">
                 <Tag className="w-5 h-5 text-yellow-500" />
                 <span>{t('manageGroups')}</span>
               </h3>
-              <button
-                onClick={() => setShowManageGroups(false)}
-                aria-label={lang === 'ar' ? 'إغلاق' : 'Close'}
-                className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-zinc-800 transition"
-              >
+              <button onClick={() => setShowManageGroups(false)} className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:text-white dark:hover:bg-zinc-800 transition">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="p-6 space-y-5">
-              {/* Add New Group Form */}
               <form onSubmit={handleAddGroup} className="space-y-3 bg-gradient-to-br from-yellow-50 to-amber-50 dark:from-yellow-400/10 dark:to-amber-400/5 p-5 rounded-2xl border border-yellow-200 dark:border-yellow-400/20">
                 <div className="flex items-center gap-2">
                   <span className="w-8 h-8 rounded-lg bg-yellow-400 text-black flex items-center justify-center shrink-0">
                     <Plus className="w-4 h-4" />
                   </span>
-                  <label className="block text-sm font-extrabold text-slate-800 dark:text-zinc-100">{t('addGroup')}</label>
+                  <label className="block text-sm font-extrabold">{t('addGroup')}</label>
                 </div>
-
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input
-                    type="text"
-                    required
-                    value={newGroupName}
+                    type="text" required value={newGroupName}
                     onChange={(e) => setNewGroupName(e.target.value)}
                     placeholder={t('groupNamePlaceholder')}
-                    className="flex-1 min-w-0 px-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition"
+                    className="flex-1 min-w-0 px-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-yellow-400"
                   />
-                  <select
-                    value={newGroupYear}
-                    onChange={(e) => setNewGroupYear(e.target.value)}
-                    aria-label={t('gradeLabel')}
-                    className="sm:w-40 px-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent transition cursor-pointer"
-                  >
+                  <select value={newGroupYear} onChange={(e) => setNewGroupYear(e.target.value)} className="sm:w-40 px-4 py-3 rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm font-bold cursor-pointer">
                     {YEARS.map((y) => (
-                      <option key={y.id} value={y.id}>
-                        {lang === 'ar' ? y.shortTitleAr : y.shortTitle}
-                      </option>
+                      <option key={y.id} value={y.id}>{lang === 'ar' ? y.shortTitleAr : y.shortTitle}</option>
                     ))}
                   </select>
                 </div>
-
-                <button
-                  type="submit"
-                  disabled={addingGroup}
-                  className="w-full py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 active:scale-[0.99] disabled:opacity-60 text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow-md shadow-yellow-400/20 transition"
-                >
+                <button type="submit" disabled={addingGroup} className="w-full py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow-md transition">
                   {addingGroup ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                   <span>{t('saveGroup')}</span>
                 </button>
               </form>
 
-              {/* Existing Groups List */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-1">
-                  <label className="block text-xs font-bold text-slate-500 dark:text-zinc-400">
-                    {lang === 'ar' ? 'المجموعات الحالية' : 'Current groups'}
-                  </label>
-                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-500 dark:text-zinc-400">
-                    {groups.length}
-                  </span>
+                  <label className="block text-xs font-bold text-slate-500">{lang === 'ar' ? 'المجموعات الحالية' : 'Current groups'}</label>
+                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-zinc-800 text-slate-500">{groups.length}</span>
                 </div>
                 {groups.length === 0 ? (
-                  <div className="text-center py-8 px-4 rounded-2xl border border-dashed border-slate-200 dark:border-zinc-800">
+                  <div className="text-center py-8 rounded-2xl border border-dashed border-slate-200 dark:border-zinc-800">
                     <Tag className="w-8 h-8 text-slate-300 dark:text-zinc-600 mx-auto mb-2" />
-                    <p className="text-xs text-slate-400 dark:text-zinc-500 font-bold">
-                      {lang === 'ar' ? 'لا توجد مجموعات مسجلة بعد' : 'No groups created yet'}
-                    </p>
+                    <p className="text-xs text-slate-400 font-bold">{lang === 'ar' ? 'لا توجد مجموعات' : 'No groups yet'}</p>
                   </div>
                 ) : (
                   <ul className="space-y-2">
                     {groups.map((g) => (
-                      <li
-                        key={g.id}
-                        className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-100 dark:border-zinc-700/50 hover:border-yellow-400/40 transition"
-                      >
+                      <li key={g.id} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-100 dark:border-zinc-700/50">
                         <div className="flex items-center gap-3 min-w-0">
                           <span className="w-9 h-9 rounded-lg bg-purple-100 dark:bg-purple-500/15 text-purple-600 dark:text-purple-300 flex items-center justify-center shrink-0">
                             <Tag className="w-4 h-4" />
                           </span>
                           <div className="min-w-0">
-                            <span className="font-bold text-sm text-slate-800 dark:text-zinc-100 block truncate">{g.name}</span>
-                            <span className="text-[11px] text-slate-400 dark:text-zinc-500 font-bold">
-                              {lang === 'ar' ? YEARS.find((y) => y.id === g.year_id)?.shortTitleAr : YEARS.find((y) => y.id === g.year_id)?.shortTitle || (lang === 'ar' ? 'عام' : 'General')}
+                            <span className="font-bold text-sm block truncate">{g.name}</span>
+                            <span className="text-[11px] text-slate-400 font-bold">
+                              {lang === 'ar' ? YEARS.find((y) => y.id === g.year_id)?.shortTitleAr : YEARS.find((y) => y.id === g.year_id)?.shortTitle || 'General'}
                             </span>
                           </div>
                         </div>
-                        <button
-                          onClick={() => handleDeleteGroup(g.id)}
-                          aria-label={lang === 'ar' ? 'حذف المجموعة' : 'Delete group'}
-                          className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-600 transition shrink-0"
-                        >
+                        <button onClick={() => handleDeleteGroup(g.id)} className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 shrink-0">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </li>
@@ -455,23 +708,37 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                 <TrendingUp className="w-5 h-5 text-yellow-500" />
                 <span>{detail.full_name}</span>
               </h3>
-              <button
-                onClick={() => {
-                  setDetail(null)
-                  setDetailData(null)
-                }}
-                className="text-slate-400 hover:text-slate-600"
-              >
+              <button onClick={() => { setDetail(null); setDetailData(null) }} className="text-slate-400 hover:text-slate-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {loadingDetail || !detailData ? (
-              <div className="py-12 flex justify-center">
-                <Loader2 className="w-7 h-7 animate-spin text-yellow-500" />
-              </div>
+              <div className="py-12 flex justify-center"><Loader2 className="w-7 h-7 animate-spin text-yellow-500" /></div>
             ) : (
               <>
+                {/* Contact Info */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-black/50">
+                    <Mail className="w-4 h-4 text-yellow-500" />
+                    <span className="font-mono truncate" dir="ltr">{detail.email || '—'}</span>
+                  </div>
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-black/50">
+                    <Phone className="w-4 h-4 text-yellow-500" />
+                    <span className="font-mono" dir="ltr">{detail.phone || '—'}</span>
+                  </div>
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-black/50">
+                    <Phone className="w-4 h-4 text-green-500" />
+                    <span className="text-slate-500">{lang === 'ar' ? 'ولي الأمر' : 'Guardian'}:</span>
+                    <span className="font-mono" dir="ltr">{detail.parent_phone || '—'}</span>
+                  </div>
+                  <div className="flex items-center gap-2 p-3 rounded-xl bg-slate-50 dark:bg-black/50">
+                    <MapPin className="w-4 h-4 text-purple-500" />
+                    <span>{detail.governorate || '—'}</span>
+                  </div>
+                </div>
+
+                {/* Analytics */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {[
                     { label: t('attendanceRate'), value: `${detailData.analytics.attendance_percent ?? 0}%` },
@@ -486,6 +753,7 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                   ))}
                 </div>
 
+                {/* Grades */}
                 <div>
                   <h4 className="font-bold text-sm mb-2">{t('gradesTab')}</h4>
                   {detailData.grades.length === 0 ? (
@@ -502,17 +770,18 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                   )}
                 </div>
 
+                {/* Attendance with Cancel */}
                 <div>
                   <h4 className="font-bold text-sm mb-2">{t('attendanceTab')}</h4>
                   {detailData.attendance.length === 0 ? (
                     <p className="text-xs text-slate-500">{t('noAttendanceYet')}</p>
                   ) : (
                     <div className="flex flex-wrap gap-1.5">
-                      {detailData.attendance.slice(0, 20).map((a) => (
+                      {detailData.attendance.slice(0, 30).map((a) => (
                         <span
                           key={a.id}
                           title={a.session_date}
-                          className={`px-2 py-1 rounded-md text-[10px] font-bold ${
+                          className={`px-2 py-1 rounded-md text-[10px] font-bold cursor-pointer ${
                             a.status === 'present'
                               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
                               : a.status === 'absent'
@@ -521,16 +790,17 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                               ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
                               : 'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-400'
                           }`}
+                          onClick={() => handleCancelAttendance(detail.id, a.session_date)}
                         >
-                          {a.session_date?.slice(5)}
+                          {a.session_date?.slice(5)} {cancellingAttendance === a.session_date ? '...' : ''}
                         </span>
                       ))}
                     </div>
                   )}
+                  <p className="text-[10px] text-slate-400 mt-1">{lang === 'ar' ? 'اضغط على تاريخ لحذف السجل' : 'Click a date to delete record'}</p>
                 </div>
 
-                {/* Homework History — grades recorded in the Homework module
-                    sync automatically into each student's profile */}
+                {/* Homework History */}
                 <div>
                   <h4 className="font-bold text-sm mb-2 flex items-center gap-1.5">
                     <ClipboardList className="w-4 h-4 text-yellow-500" />
@@ -557,13 +827,9 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                                 {sub.score} / {total}
                               </span>
                             ) : sub ? (
-                              <span className="px-2.5 py-1 rounded-lg bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 font-bold shrink-0">
-                                {t('submitted')}
-                              </span>
+                              <span className="px-2.5 py-1 rounded-lg bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300 font-bold shrink-0">{t('submitted')}</span>
                             ) : (
-                              <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 dark:bg-zinc-800 dark:text-zinc-400 font-bold shrink-0">
-                                {t('notSubmitted')}
-                              </span>
+                              <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 dark:bg-zinc-800 dark:text-zinc-400 font-bold shrink-0">{t('notSubmitted')}</span>
                             )}
                           </div>
                         )
@@ -572,9 +838,181 @@ export default function StudentsTab({ students = [], analytics = [], onRefresh }
                   )}
                 </div>
 
-                <WhatsAppReportButton student={detail} />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button onClick={() => { openEdit(detail); setDetail(null) }} className="px-4 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black text-xs font-bold flex items-center gap-1.5">
+                    <Edit3 className="w-3.5 h-3.5" /> {t('edit')}
+                  </button>
+                  <button onClick={() => { openPasswordReset(detail); setDetail(null) }} className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold flex items-center gap-1.5">
+                    <Lock className="w-3.5 h-3.5" /> {lang === 'ar' ? 'تغيير كلمة المرور' : 'Change Password'}
+                  </button>
+                  <WhatsAppReportButton student={detail} />
+                </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Edit Student Modal */}
+      {editing && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-5 max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-zinc-800 pb-3">
+              <h3 className="font-bold text-lg flex items-center gap-2">
+                <Edit3 className="w-5 h-5 text-yellow-500" />
+                <span>{lang === 'ar' ? 'تعديل بيانات الطالب' : 'Edit Student'}</span>
+              </h3>
+              <button onClick={() => setEditing(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold mb-1">{t('fullNameLabel')}</label>
+                <input type="text" value={editForm.fullName} onChange={(e) => setEditForm({ ...editForm, fullName: e.target.value })}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold mb-1">{t('emailLabel')}</label>
+                <input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} dir="ltr"
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold mb-1">{t('studentPhoneLabel')}</label>
+                  <input type="tel" value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold mb-1">{t('parentPhoneLabel')}</label>
+                  <input type="tel" value={editForm.parentPhone} onChange={(e) => setEditForm({ ...editForm, parentPhone: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold mb-1">{t('gradeLabel')}</label>
+                  <select value={editForm.yearId} onChange={(e) => setEditForm({ ...editForm, yearId: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm">
+                    {YEARS.map((y) => <option key={y.id} value={y.id}>{lang === 'ar' ? y.titleAr : y.title}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold mb-1">{t('studentGroup')}</label>
+                  <select value={editForm.groupId} onChange={(e) => setEditForm({ ...editForm, groupId: e.target.value })}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm">
+                    <option value="">{t('noGroupAssigned')}</option>
+                    {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-bold mb-1">{t('governorateLabel')}</label>
+                <select value={editForm.governorate} onChange={(e) => setEditForm({ ...editForm, governorate: e.target.value })}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm">
+                  {GOVERNORATES.map((g) => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+              <label className="flex items-center gap-2.5 text-sm font-bold">
+                <input type="checkbox" checked={editForm.isActive} onChange={(e) => setEditForm({ ...editForm, isActive: e.target.checked })}
+                  className="w-4 h-4 accent-yellow-400" />
+                <span>{lang === 'ar' ? 'حساب مفعّل' : 'Active Account'}</span>
+              </label>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button onClick={handleSaveEdit} disabled={savingEdit}
+                className="flex-1 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow">
+                {savingEdit ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                <span>{t('save')}</span>
+              </button>
+              <button onClick={() => setEditing(null)} className="px-6 py-3 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm">{t('cancel')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Password Reset Modal */}
+      {passwordModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 max-w-md w-full space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-zinc-800 pb-3">
+              <h3 className="font-bold text-lg flex items-center gap-2">
+                <Lock className="w-5 h-5 text-yellow-500" />
+                <span>{lang === 'ar' ? 'تغيير كلمة المرور' : 'Change Password'}</span>
+              </h3>
+              <button onClick={() => setPasswordModal(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="p-4 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs font-bold text-amber-700 dark:text-amber-300 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{lang === 'ar' ? 'سيتم تعيين كلمة مرور جديدة للطالب. لا يمكن استرجاع كلمة المرور القديمة.' : 'A new password will be set for this student. The old password cannot be recovered.'}</span>
+            </div>
+
+            <p className="text-sm font-bold">{passwordModal.full_name}</p>
+
+            {passwordError && (
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-bold text-center">
+                {passwordError}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold mb-1">{lang === 'ar' ? 'كلمة المرور الجديدة' : 'New Password'}</label>
+                <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} minLength={8}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold mb-1">{lang === 'ar' ? 'تأكيد كلمة المرور' : 'Confirm Password'}</label>
+                <input type="password" value={confirmNewPassword} onChange={(e) => setConfirmNewPassword(e.target.value)} minLength={8}
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm" />
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button onClick={handleSetPassword} disabled={changingPassword}
+                className="flex-1 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow">
+                {changingPassword ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+                <span>{lang === 'ar' ? 'تعيين كلمة المرور' : 'Set Password'}</span>
+              </button>
+              <button onClick={() => setPasswordModal(null)} className="px-6 py-3 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm">{t('cancel')}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Action Modal */}
+      {bulkAction && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 max-w-sm w-full space-y-5">
+            <h3 className="font-bold text-lg flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-yellow-500" />
+              <span>{
+                bulkAction === 'group' ? (lang === 'ar' ? 'تعيين مجموعة' : 'Assign Group') :
+                bulkAction === 'activate' ? (lang === 'ar' ? 'تفعيل الطلاب' : 'Activate Students') :
+                (lang === 'ar' ? 'إيقاف الطلاب' : 'Suspend Students')
+              }</span>
+            </h3>
+            <p className="text-sm text-slate-500">
+              {selected.size} {lang === 'ar' ? 'طالب محدد' : 'students selected'}
+            </p>
+
+            {bulkAction === 'group' && (
+              <select value={bulkGroupId} onChange={(e) => setBulkGroupId(e.target.value)}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm font-bold">
+                <option value="">{t('noGroupAssigned')}</option>
+                {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            )}
+
+            <div className="flex gap-3">
+              <button onClick={handleBulkAction} disabled={bulkSaving}
+                className="flex-1 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:opacity-60 text-black font-extrabold text-sm flex items-center justify-center gap-2">
+                {bulkSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                <span>{lang === 'ar' ? 'تأكيد' : 'Confirm'}</span>
+              </button>
+              <button onClick={() => setBulkAction(null)} className="px-6 py-3 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-sm">{t('cancel')}</button>
+            </div>
           </div>
         </div>
       )}

@@ -25,6 +25,15 @@ const newQuestion = () => ({
   options: ['A) ', 'B) ', 'C) ', 'D) '],
   answer: 'A',
   points: 1,
+  subpoints: [],
+})
+
+const newSubpoint = () => ({
+  id: `sp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  text: '',
+  points: 1,
+  options: [],
+  answer: '',
 })
 
 const EMPTY_FORM = () => ({
@@ -38,6 +47,7 @@ const EMPTY_FORM = () => ({
   explanationVideoTitle: '',
   isPublished: true,
   groupName: '',
+  groupIds: [],
   questions: [newQuestion()],
 })
 
@@ -59,12 +69,20 @@ const entryToForm = (e) => ({
   explanationVideoTitle: e.explanationVideoTitle || '',
   isPublished: e.isPublished !== false,
   groupName: e.groupName || '',
+  groupIds: e.groupIds || [],
   questions: (e.questions && e.questions.length ? e.questions : []).map((q) => ({
     id: q.id || `q_${Math.random().toString(36).slice(2, 8)}`,
     question: q.question || '',
-    options: padOptions(q),
-    answer: q.answer || q.correctAnswer || 'A',
+    options: q.options?.length ? padOptions(q) : ['A) ', 'B) ', 'C) ', 'D) '],
+    answer: q.answer || q.correctAnswer || '',
     points: Number(q.points) || 1,
+    subpoints: Array.isArray(q.subpoints) ? q.subpoints.map((sp) => ({
+      id: sp.id || `sp_${Math.random().toString(36).slice(2, 8)}`,
+      text: sp.text || '',
+      points: Number(sp.points) || 1,
+      options: sp.options || [],
+      answer: sp.answer || '',
+    })) : [],
   })),
 })
 
@@ -160,13 +178,29 @@ export default function HomeworkTab() {
     try {
       const payload = {
         ...form,
-        questions: form.questions.map((q) => ({
-          id: q.id,
-          question: q.question.trim(),
-          options: q.options.map((o, i) => o || `${['A', 'B', 'C', 'D'][i]}) `),
-          answer: q.answer,
-          points: Number(q.points) || 1,
-        })),
+        questions: form.questions.map((q) => {
+          const base = {
+            id: q.id,
+            question: q.question.trim(),
+            points: Number(q.points) || 1,
+          }
+          // Include options/answer for MCQ questions without subpoints
+          if (!q.subpoints?.length) {
+            base.options = q.options.map((o, i) => o || `${['A', 'B', 'C', 'D'][i]}) `)
+            base.answer = q.answer
+          }
+          // Include subpoints if present
+          if (q.subpoints?.length) {
+            base.subpoints = q.subpoints.map((sp) => ({
+              id: sp.id,
+              text: sp.text.trim(),
+              points: Number(sp.points) || 1,
+              ...(sp.options?.length ? { options: sp.options } : {}),
+              ...(sp.answer ? { answer: sp.answer } : {}),
+            }))
+          }
+          return base
+        }),
       }
       if (editor === 'create') await createHomeworkEntry(payload)
       else await updateHomeworkEntry(editor.id, payload)
@@ -197,6 +231,40 @@ export default function HomeworkTab() {
 
   const removeQuestion = (idx) =>
     setForm((prev) => ({ ...prev, questions: prev.questions.filter((_, i) => i !== idx) }))
+
+  const addSubpoint = (qIdx) =>
+    setForm((prev) => ({
+      ...prev,
+      questions: prev.questions.map((q, i) =>
+        i === qIdx ? { ...q, subpoints: [...(q.subpoints || []), newSubpoint()] } : q
+      ),
+    }))
+
+  const removeSubpoint = (qIdx, spIdx) =>
+    setForm((prev) => ({
+      ...prev,
+      questions: prev.questions.map((q, i) =>
+        i === qIdx ? { ...q, subpoints: q.subpoints.filter((_, si) => si !== spIdx) } : q
+      ),
+    }))
+
+  const updateSubpoint = (qIdx, spIdx, patch) =>
+    setForm((prev) => ({
+      ...prev,
+      questions: prev.questions.map((q, i) =>
+        i === qIdx
+          ? { ...q, subpoints: q.subpoints.map((sp, si) => (si === spIdx ? { ...sp, ...patch } : sp)) }
+          : q
+      ),
+    }))
+
+  const toggleGroupId = (gid) =>
+    setForm((prev) => ({
+      ...prev,
+      groupIds: prev.groupIds.includes(gid)
+        ? prev.groupIds.filter((id) => id !== gid)
+        : [...prev.groupIds, gid],
+    }))
 
   /* ---------- Submissions & answer-key marking ---------- */
   const openSubmissions = async (entry) => {
@@ -666,15 +734,37 @@ export default function HomeworkTab() {
                         className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
                       />
                     </div>
-                    <div>
-                      <label className="block text-xs font-bold mb-1.5">{t('entryLinkedGroup')} ({t('optional')})</label>
-                      <select
-                        value={form.groupName} onChange={(e) => setForm({ ...form, groupName: e.target.value })}
-                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
-                      >
-                        <option value="">{t('allGroups')}</option>
-                        {groups.map((g) => <option key={g.id} value={g.name}>{g.name}</option>)}
-                      </select>
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-bold mb-1.5">{lang === 'ar' ? 'المجموعات المستهدفة' : 'Target Groups'} ({t('optional')})</label>
+                      <div className="rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black p-3 space-y-2">
+                        <p className="text-[11px] text-slate-400 font-bold">
+                          {lang === 'ar' ? 'إذا لم تختر أي مجموعة، سيكون الواجب متاحاً لكل طلاب الصف.' : 'If no groups are selected, homework is available to all students in the grade.'}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {groups
+                            .filter((g) => !g.year_id || String(g.year_id) === String(form.yearId))
+                            .map((g) => (
+                              <label key={g.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer text-xs font-bold transition ${
+                                form.groupIds.includes(g.id)
+                                  ? 'bg-yellow-400/15 border-yellow-400/50 text-yellow-700 dark:text-yellow-300'
+                                  : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-700 text-slate-600 dark:text-zinc-400'
+                              }`}>
+                                <input
+                                  type="checkbox"
+                                  checked={form.groupIds.includes(g.id)}
+                                  onChange={() => toggleGroupId(g.id)}
+                                  className="w-3.5 h-3.5 accent-yellow-400"
+                                />
+                                <span>{g.name}</span>
+                              </label>
+                            ))}
+                          {groups.filter((g) => !g.year_id || String(g.year_id) === String(form.yearId)).length === 0 && (
+                            <span className="text-xs text-slate-400">{lang === 'ar' ? 'لا توجد مجموعات لهذا الصف' : 'No groups for this grade'}</span>
+                          )}
+                        </div>
+                        {/* Keep legacy group_name for backward compat */}
+                        <input type="hidden" value={form.groupName} onChange={() => {}} />
+                      </div>
                     </div>
                     <div>
                       <label className="block text-xs font-bold mb-1.5">{t('attachmentUrl')}</label>
@@ -830,7 +920,68 @@ export default function HomeworkTab() {
                                 className="w-24 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-yellow-400"
                               />
                             </label>
+                            <button
+                              type="button"
+                              onClick={() => addSubpoint(idx)}
+                              className="px-3 py-2 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-xs font-bold flex items-center gap-1.5 hover:bg-purple-100 transition"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>{lang === 'ar' ? 'إضافة نقطة فرعية' : 'Add Subpoint'}</span>
+                            </button>
                           </div>
+
+                          {/* Subpoints Editor */}
+                          {q.subpoints?.length > 0 && (
+                            <div className="ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9 space-y-2 border-t border-slate-200 dark:border-zinc-800 pt-3 mt-1">
+                              <p className="text-[11px] font-bold text-purple-600 dark:text-purple-400 flex items-center gap-1.5">
+                                <span>{lang === 'ar' ? 'النقاط الفرعية' : 'Subpoints'}:</span>
+                              </p>
+                              {q.subpoints.map((sp, spIdx) => {
+                                const romanNumerals = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x']
+                                return (
+                                  <div key={sp.id} className="flex items-start gap-2 p-3 rounded-xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/50 dark:border-purple-800/50">
+                                    <span className="w-7 h-7 rounded-lg bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 flex items-center justify-center text-[11px] font-bold shrink-0 mt-1" dir="ltr">
+                                      {romanNumerals[spIdx] || (spIdx + 1)}
+                                    </span>
+                                    <div className="flex-1 min-w-0 space-y-2">
+                                      <textarea
+                                        rows={1}
+                                        value={sp.text}
+                                        onChange={(e) => updateSubpoint(idx, spIdx, { text: e.target.value })}
+                                        placeholder={lang === 'ar' ? 'نص النقطة الفرعية...' : 'Subpoint text...'}
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm resize-y"
+                                      />
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+                                          {t('pointsLabel')}:
+                                          <input
+                                            type="number" min="0.5" step="0.5" value={sp.points}
+                                            onChange={(e) => updateSubpoint(idx, spIdx, { points: e.target.value })}
+                                            className="w-16 px-2 py-1 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs font-extrabold text-center"
+                                          />
+                                        </label>
+                                        {/* Optional MCQ for subpoint */}
+                                        <input
+                                          type="text"
+                                          value={sp.answer}
+                                          onChange={(e) => updateSubpoint(idx, spIdx, { answer: e.target.value })}
+                                          placeholder={lang === 'ar' ? 'الإجابة (اختياري)' : 'Answer (optional)'}
+                                          className="flex-1 min-w-[120px] px-2 py-1 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs"
+                                        />
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => removeSubpoint(idx, spIdx)}
+                                      className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 shrink-0"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

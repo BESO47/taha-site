@@ -7,6 +7,7 @@ Apply in Supabase SQL Editor:
 1. `schema.sql` — tables, indexes, signup trigger, RLS, redacted views, private storage.
 2. `homework-grading.sql` — grading helpers/RPCs and reporting view.
 3. `bulk-messaging.sql` — progress-report RPCs.
+4. `migration-features.sql` — multi-group homework, admin student management RPCs, attendance cancellation, paginated student listing, signup group validation.
 
 The scripts use `IF NOT EXISTS`, `CREATE OR REPLACE`, and policy/trigger recreation where possible. Back up production before any migration and test on staging first.
 
@@ -136,16 +137,38 @@ Admin-only audit records: student FK, normalized phone, recipient name/type, mes
 
 The owner-executed catalog views are intentional: direct base-table read policies are admin-only, and each sensitive output is explicitly redacted.
 
+### `assignment_groups`
+
+Many-to-many junction for multi-group homework assignment:
+
+| Column | Type | Rules |
+| --- | --- | --- |
+| `id` | UUID | PK |
+| `assignment_id` | UUID | FK assignments, cascade |
+| `group_id` | UUID | FK groups, cascade |
+| `created_at` | timestamptz | Default now |
+
+Unique `(assignment_id, group_id)`. When an assignment has entries in this table, only students in those groups can access it (in addition to the legacy `group_name` check). An empty table means the assignment is general (available to all students of the matching year).
+
 ## Important functions
 
 - `is_admin()`, `is_active_student()` — non-recursive RLS helpers.
-- `can_access_assignment(uuid)` — publication/activity/year/group authorization.
+- `can_access_assignment(uuid)` — publication/activity/year/group authorization (supports multi-group via `assignment_groups`).
 - `promote_to_admin(email)` — SQL-editor bootstrap or admin-only RPC.
 - `strip_assessment_answers(jsonb)` — removes answer-key fields.
 - `grade_assignment_submission(...)`, `grade_lesson_homework(...)` — authoritative markers.
 - `regrade_assignment(uuid)`, `regrade_lesson_homework(uuid)` — admin batch operations.
 - `bulk_messaging_report(year)`, `student_progress_log(student)` — reporting RPCs.
 - `touch_updated_at()`, `stamp_grader()` — audit triggers.
+- `admin_update_student(...)` — securely updates student profile fields including email sync with auth.users.
+- `admin_set_student_password(uuid, text)` — sets a new password for a student via auth.users encrypted_password.
+- `admin_initiate_password_reset(uuid)` — returns email for client-side Supabase reset flow.
+- `fetch_students_paginated(...)` — server-side paginated student listing with search/filter.
+- `cancel_attendance(uuid, date)` — deletes an attendance record (admin-only).
+- `bulk_update_student_group(uuid[], uuid)` — batch assign students to a group.
+- `bulk_update_student_status(uuid[], boolean)` — batch activate/suspend students.
+- `set_assignment_groups(uuid, uuid[])` — replace assignment's group assignments.
+- `get_assignment_groups(uuid)` — retrieve group IDs for an assignment.
 
 ## Storage
 
