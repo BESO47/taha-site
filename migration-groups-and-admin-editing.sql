@@ -52,6 +52,18 @@
 --     homework-subpoints.sql refreshes it so stored breakdowns become
 --     self-contained for every other reader.
 --
+--   BUG 5 — a correct re-grade refused by a stale ceiling.
+--     `validate_grade_bounds` compared the score only against
+--     `assignments.total_points / max_score`, so an entry whose stored
+--     maximum predates its current answer key rejected the marker's own
+--     honest total ("Score 12.00 exceeds maximum 10.00"): pressing
+--     "Confirm Change" saved nothing. Section 6c installs the corrected
+--     bound — byte-identical to the copy in schema.sql, and compared against
+--     it by a security check: the row's own recorded total counts as a
+--     ceiling, and a write performed under the marker's autograde bypass is
+--     not second-guessed. Students are unaffected; their score is restored
+--     by guard_submission_grading before this trigger looks at it.
+--
 -- HOW TO RUN
 --   Supabase Dashboard -> SQL Editor -> New query -> paste -> Run.
 --
@@ -458,6 +470,73 @@ BEGIN
     RAISE NOTICE 'public.ph_mark_answers does not emit `options` in its breakdown — re-run homework-subpoints.sql to refresh the marker (the admin editor works anyway, but stored breakdowns stay less complete).';
   END IF;
 END $$;
+
+-- ---------------------------------------------------------------------
+-- 6c. THE SCORE CEILING MUST NOT VETO AN HONEST RE-GRADE
+-- ---------------------------------------------------------------------
+-- Every answer edit re-marks the paper and writes the marker's own total.
+-- `validate_grade_bounds` compared that score against
+-- `COALESCE(assignments.total_points, assignments.max_score)` only, so an
+-- entry whose stored maximum predates the current questions refused the
+-- write outright — "Score 12.00 exceeds maximum 10.00" — and the admin
+-- could not change the answer however correct the correction was.
+--
+-- The body below is byte-for-byte the copy in schema.sql; a security
+-- regression check compares them so the two can never drift. Re-applying
+-- schema.sql achieves the same thing; this file exists so that one
+-- migration is enough on a live project.
+CREATE OR REPLACE FUNCTION public.validate_grade_bounds()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  allowed_score NUMERIC;
+BEGIN
+  IF NEW.score IS NULL THEN RETURN NEW; END IF;
+
+  -- A score the answer-key marker computed is not a client input.
+  -- `physics_hub.autograde` is set only inside the SECURITY DEFINER grading
+  -- RPCs, in the same transaction as the write, and it is exactly the flag
+  -- guard_submission_grading above already recognizes. Without this, an
+  -- honest re-grade could be vetoed by a stale `assignments.max_score`
+  -- ("Score 12.00 exceeds maximum 10.00"), which made the admin answer
+  -- editor look broken: pressing Confirm changed nothing and errored.
+  IF TG_TABLE_NAME = 'submissions'
+     AND COALESCE(current_setting('physics_hub.autograde', true), 'off') = 'on' THEN
+    RETURN NEW;
+  END IF;
+
+  IF TG_TABLE_NAME = 'grades' THEN
+    SELECT max_score INTO allowed_score FROM public.quizzes WHERE id = NEW.quiz_id;
+  ELSE
+    -- The row's own recorded total is a legitimate ceiling too, because the
+    -- marker writes it from the key in the same statement. A student can never
+    -- reach here with an inflated score: guard_submission_grading fires first
+    -- (BEFORE triggers run in name order) and restores the stored score.
+    SELECT COALESCE(a.total_points, a.max_score) INTO allowed_score
+    FROM public.assignments a WHERE a.id = NEW.assignment_id;
+    IF NEW.total_points IS NOT NULL THEN
+      allowed_score := GREATEST(COALESCE(allowed_score, NEW.total_points), NEW.total_points);
+    END IF;
+  END IF;
+
+  IF allowed_score IS NOT NULL AND NEW.score > allowed_score THEN
+    RAISE EXCEPTION 'Score % exceeds maximum %', NEW.score, allowed_score USING ERRCODE = '22023';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS grades_score_bounds ON public.grades;
+CREATE TRIGGER grades_score_bounds
+  BEFORE INSERT OR UPDATE ON public.grades
+  FOR EACH ROW EXECUTE FUNCTION public.validate_grade_bounds();
+
+DROP TRIGGER IF EXISTS submissions_score_bounds ON public.submissions;
+CREATE TRIGGER submissions_score_bounds
+  BEFORE INSERT OR UPDATE ON public.submissions
+  FOR EACH ROW EXECUTE FUNCTION public.validate_grade_bounds();
 
 -- =====================================================================
 -- 7. BULK GROUP ASSIGNMENT — respects the grade rule

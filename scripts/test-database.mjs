@@ -572,6 +572,64 @@ try {
     await actingAs(client, null, null)()
   })
 
+  /* ---------- 7c. a stale ceiling must not veto an honest re-grade ----- */
+  await check('an answer edit survives a stale assignments.max_score', async () => {
+    // Legacy entries can still carry a maximum that predates their questions:
+    // the stored ceiling used to be the ONLY bound, so re-marking a paper
+    // whose key is worth more than that number was refused outright
+    // ("Score 12.00 exceeds maximum 10.00") and the admin could not change
+    // the answer at all.
+    const { rows: [{ id: staleId }] } = await client.query(
+      `INSERT INTO public.assignments (title, year_id, is_published, max_score, questions, created_by)
+       VALUES ('Stale ceiling homework','5',true,10,$1::jsonb,$2) RETURNING id`,
+      [JSON.stringify([
+        { id: 'q1', question: 'A?', options: ['A) x', 'B) y'], answer: 'A', points: 6 },
+        { id: 'q2', question: 'B?', options: ['A) x', 'B) y'], answer: 'B', points: 6 },
+      ]), ADMIN]
+    )
+    await client.query(`UPDATE public.assignments SET total_points = NULL WHERE id = $1`, [staleId])
+
+    await actingAs(client, STU_B, 'authenticated')()
+    await client.query(
+      `INSERT INTO public.submissions (assignment_id, student_id, answers, status)
+       VALUES ($1,$2,$3::jsonb,'submitted')`,
+      [staleId, STU_B, JSON.stringify({ q1: 'A', q2: 'A' })]
+    )
+    const { rows: [staleSub] } = await client.query(
+      `SELECT id FROM public.submissions WHERE assignment_id = $1 AND student_id = $2`,
+      [staleId, STU_B]
+    )
+    await actingAs(client, null, null)()
+
+    await actingAs(client, ADMIN, 'authenticated')()
+    const { rows: [r] } = await client.query(
+      `SELECT public.admin_update_submission_answer($1,'q2',NULL,'B') AS res`, [staleSub.id]
+    )
+    assert.equal(Number(r.res.score), 12, 'the marker total is honored, not the stale 10')
+    assert.equal(Number(r.res.total_points), 12)
+    assert.equal(r.res.status, 'graded')
+    await actingAs(client, null, null)()
+
+    // The bypass is only for server-computed writes: a direct table write
+    // beyond the recorded total is still refused, even for an admin.
+    await actingAs(client, ADMIN, 'authenticated')()
+    await assert.rejects(
+      client.query(`UPDATE public.submissions SET score = 99 WHERE id = $1`, [staleSub.id]),
+      /exceeds maximum/
+    )
+    await actingAs(client, null, null)()
+
+    // And a student still cannot post a score: the grading guard restores the
+    // stored one before this trigger looks at it.
+    await actingAs(client, STU_B, 'authenticated')()
+    await client.query(`UPDATE public.submissions SET score = 99 WHERE id = $1`, [staleSub.id])
+    await actingAs(client, null, null)()
+    const { rows: [untouched] } = await client.query(
+      `SELECT score FROM public.submissions WHERE id = $1`, [staleSub.id]
+    )
+    assert.equal(Number(untouched.score), 12, 'the student write changed nothing')
+  })
+
   /* ---------- 8. admin password reset -------------------------------- */
   await check('admin_set_student_password hashes into auth.users', async () => {
     await actingAs(client, ADMIN, 'authenticated')()

@@ -88,6 +88,23 @@ const checks = [
     // A key-less item is still editable, but the score must not be promoted.
     assert.match(subpointsSql, /v_status_after := CASE WHEN m\.total_points > 0 THEN 'graded' ELSE v_sub\.status END/)
   }],
+  ['the score ceiling trusts the marker, and both copies stay identical', () => {
+    // schema.sql is canonical; the fix migration carries a byte-identical copy
+    // so that ONE file is enough on a live project. They must not drift.
+    const grab = (text) => {
+      const found = text.match(/CREATE OR REPLACE FUNCTION public\.validate_grade_bounds\(\)\n[\s\S]*?\$\$;/)
+      assert.ok(found, 'public.validate_grade_bounds is defined')
+      return found[0]
+    }
+    assert.equal(grab(schema), grab(groupsSql), 'both copies of the bound check must match exactly')
+    // Only the server-side marker may skip the bound, and only for submissions.
+    assert.match(schema,
+      /IF TG_TABLE_NAME = 'submissions'\s+AND COALESCE\(current_setting\('physics_hub\.autograde', true\), 'off'\) = 'on' THEN\s+RETURN NEW/)
+    // A student's own score never survives the grading guard, so the bypass is
+    // unreachable from the browser.
+    assert.match(schema, /NEW\.score\s+:= OLD\.score/)
+    assert.match(schema, /RAISE EXCEPTION 'Score % exceeds maximum %'/)
+  }],
   ['answers are addressed by stable id, never by array index', () => {
     assert.match(subpointsSql, /WHERE COALESCE\(item ->> 'id', ''\) = v_sp_id/)
     assert.match(subpointsSql, /RAISE EXCEPTION 'Subpoint % is not part of question %'/)

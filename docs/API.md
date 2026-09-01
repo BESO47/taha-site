@@ -208,6 +208,8 @@ Returns totals, correct/incorrect/unanswered counts, score, total points, percen
 
 A question with subpoints is worth the sum of its subpoint points; its own `points` is ignored. Each subpoint is marked on its own, so the breakdown carries a `subpoints` array with the roman `label`, student answer, key, mark and points per item.
 
+Every breakdown row also carries the item's `options` array and its canonical `correctLetter`, so a reader holding only `submissions.breakdown` (an export, a report, the admin answer editor) can name the choices and the key without re-loading the assignment. The stored marks are authoritative: `src/lib/grading.js`'s `buildReviewBreakdown()` only re-attaches display data to older rows, never a score.
+
 ### `grade_lesson_homework`
 
 Authenticated. Same marking result for legacy lesson homework. Active matching-year student or admin; one student submission attempt.
