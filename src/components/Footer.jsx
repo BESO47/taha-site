@@ -35,14 +35,16 @@ export default function Footer() {
           {/* Col 1: Brand info */}
           <div className={`space-y-4 text-center ${lang === 'ar' ? 'md:text-right' : 'md:text-left'}`}>
             <Link to="/" className="inline-flex items-center gap-3">
-              <div className="h-12 w-12 rounded-2xl bg-yellow-400 text-black flex items-center justify-center font-extrabold text-2xl shadow-lg shadow-yellow-400/20">
+              <div className="h-12 w-12 rounded-2xl bg-yellow-400 text-black flex items-center justify-center font-extrabold text-2xl shadow-lg shadow-yellow-400/20 shrink-0">
                 <Zap className="w-7 h-7 fill-current" />
               </div>
               <div>
                 <span className="font-extrabold text-xl block text-white font-outfit">
-                  Physics Hub
+                  {lang === 'ar' ? 'فيزكس هاب' : 'Physics Hub'}
                 </span>
-                <span className="text-xs text-yellow-400 font-extrabold">{t('sloganAr')}</span>
+                <span className="text-xs text-yellow-400 font-extrabold">
+                  {lang === 'ar' ? 'أ. طه الصباغ' : 'Eng. Taha Elsabagh'}
+                </span>
               </div>
             </Link>
             <p className="text-xs text-slate-300 dark:text-zinc-400 leading-relaxed max-w-sm">
@@ -73,7 +75,7 @@ export default function Footer() {
           </div>
 
           {/* Col 3: CTA */}
-          <div className={`space-y-4 text-center flex flex-col items-center md:items-end ${lang === 'ar' ? 'md:text-right' : 'md:text-right'}`}>
+          <div className={`space-y-4 text-center flex flex-col items-center ${lang === 'ar' ? 'md:items-start md:text-left' : 'md:items-end md:text-right'}`}>
             <h3 className="font-extrabold text-lg text-white font-outfit">
               {t('ctaHeader')}
             </h3>
@@ -82,7 +84,7 @@ export default function Footer() {
               className="px-6 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-sm shadow-lg shadow-yellow-400/20 transition flex items-center gap-2"
             >
               <span>{t('ctaButton')}</span>
-              <ArrowUpRight className="w-4 h-4" />
+              <ArrowUpRight className={`w-4 h-4 ${lang === 'ar' ? 'rotate-180' : ''}`} />
             </Link>
           </div>
         </div>

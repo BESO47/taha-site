@@ -100,7 +100,7 @@ export default function ResetPasswordPage() {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               placeholder={lang === 'ar' ? 'كلمة المرور الجديدة' : 'New password'}
-              className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black"
+              className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth"
             />
             <input
               type="password"
@@ -110,7 +110,7 @@ export default function ResetPasswordPage() {
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
               placeholder={lang === 'ar' ? 'تأكيد كلمة المرور' : 'Confirm password'}
-              className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black"
+              className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth"
             />
             <button disabled={busy} className="w-full py-3 rounded-xl bg-yellow-400 text-black font-extrabold disabled:opacity-60">
               {busy ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : (lang === 'ar' ? 'حفظ كلمة المرور' : 'Save password')}
@@ -128,7 +128,7 @@ export default function ResetPasswordPage() {
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="example@gmail.com"
                 dir="ltr"
-                className="w-full px-10 py-3 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black"
+                className="w-full ltr:pl-10 ltr:pr-4 rtl:pr-10 rtl:pl-4 py-3 rounded-xl border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-black focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent smooth"
               />
             </div>
             <button disabled={busy} className="w-full py-3 rounded-xl bg-yellow-400 text-black font-extrabold disabled:opacity-60">
