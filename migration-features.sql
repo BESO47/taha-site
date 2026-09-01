@@ -491,12 +491,18 @@ DECLARE
   requested_year TEXT := metadata ->> 'year_id';
   requested_group_id UUID;
   group_year TEXT;
+  -- Resolved up front: a bare CASE ... THEN inside an IF condition confuses
+  -- the PL/pgSQL parser (it reads the CASE's THEN as the IF's THEN and the
+  -- function then fails with "syntax error at end of input").
+  resolved_year TEXT;
 BEGIN
+  resolved_year := CASE WHEN requested_year IN ('5', '6') THEN requested_year ELSE '5' END;
+
   -- Validate group_id belongs to the selected year (server-side enforcement)
   requested_group_id := NULLIF(metadata ->> 'group_id', '')::UUID;
   IF requested_group_id IS NOT NULL THEN
     SELECT year_id INTO group_year FROM public.groups WHERE id = requested_group_id;
-    IF NOT FOUND OR group_year IS DISTINCT FROM CASE WHEN requested_year IN ('5', '6') THEN requested_year ELSE '5' END THEN
+    IF NOT FOUND OR group_year IS DISTINCT FROM resolved_year THEN
       requested_group_id := NULL; -- Reject invalid group silently
     END IF;
   END IF;
@@ -509,7 +515,7 @@ BEGIN
     NEW.email,
     clean_phone,
     clean_parent_phone,
-    CASE WHEN requested_year IN ('5', '6') THEN requested_year ELSE '5' END,
+    resolved_year,
     requested_group_id,
     left(NULLIF(btrim(metadata ->> 'governorate'), ''), 120),
     'student',

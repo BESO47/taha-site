@@ -50,7 +50,10 @@ ALTER TABLE public.homework_submissions ADD COLUMN IF NOT EXISTS breakdown      
 ALTER TABLE public.homework_submissions ADD COLUMN IF NOT EXISTS auto_graded      BOOLEAN NOT NULL DEFAULT true;
 
 -- The score column must accept fractional / weighted points.
-ALTER TABLE public.homework_submissions ALTER COLUMN score TYPE NUMERIC(8,2);
+-- Uses public.retype_column() from schema.sql: a plain ALTER here would fail
+-- with "cannot alter type of a column used by a view or rule" on any install
+-- where a view already reads homework_submissions.score.
+SELECT public.retype_column('public.homework_submissions', 'score', 'NUMERIC(8,2)');
 
 -- ---------------------------------------------------------------------
 -- 2. TEXT / ANSWER NORMALIZATION HELPERS

@@ -176,6 +176,154 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------
+-- 2b. SAFE COLUMN RETYPE HELPER
+--     `ALTER TABLE ... ALTER COLUMN ... TYPE` is the one statement in this
+--     script that is NOT idempotent on its own: Postgres refuses it with
+--
+--       ERROR:  cannot alter type of a column used by a view or rule
+--       DETAIL: rule _RETURN on view homework_catalog depends on column "score"
+--
+--     as soon as a view selects the column -- which homework_catalog and
+--     student_analytics both do, so the failure hits on the SECOND run of
+--     this script (and on the first run of an install that already had the
+--     views). This helper:
+--       1. does nothing when the column already has the requested type,
+--       2. otherwise records every dependent view (including views stacked
+--          on top of them), drops them, retypes the column, then rebuilds
+--          them with their original WITH (...) options and privileges.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.retype_column(p_table regclass, p_column text, p_type text)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = public, pg_catalog
+AS $$
+DECLARE
+  v_current text;
+  v_attnum  smallint;
+  v_rec     record;
+  v_stmt    text;
+  v_names   text[] := ARRAY[]::text[];
+  v_defs    text[] := ARRAY[]::text[];
+  v_opts    text[] := ARRAY[]::text[];
+  v_grants  text[] := ARRAY[]::text[];
+  v_i       int;
+  v_matview text;
+BEGIN
+  SELECT a.attnum, format_type(a.atttypid, a.atttypmod)
+    INTO v_attnum, v_current
+    FROM pg_attribute a
+   WHERE a.attrelid = p_table AND a.attname = p_column AND NOT a.attisdropped;
+
+  IF v_attnum IS NULL THEN
+    RAISE EXCEPTION 'retype_column: column %.% does not exist', p_table::text, p_column;
+  END IF;
+
+  -- Idempotent: leave everything untouched when the type is already correct.
+  IF lower(btrim(v_current)) = lower(btrim(p_type)) THEN
+    RETURN;
+  END IF;
+
+  -- A materialized view cannot be rebuilt from its definition alone.
+  SELECT c.oid::regclass::text INTO v_matview
+    FROM pg_depend d
+    JOIN pg_rewrite r ON r.oid = d.objid
+    JOIN pg_class c   ON c.oid = r.ev_class
+   WHERE d.classid = 'pg_rewrite'::regclass
+     AND d.refclassid = 'pg_class'::regclass
+     AND d.refobjid = p_table
+     AND d.refobjsubid = v_attnum
+     AND r.rulename = '_RETURN'
+     AND c.relkind = 'm'
+   LIMIT 1;
+
+  IF v_matview IS NOT NULL THEN
+    RAISE EXCEPTION 'retype_column: materialized view % reads %.% - drop it manually and refresh it afterwards',
+      v_matview, p_table::text, p_column;
+  END IF;
+
+  -- Collect the view that selects the column plus every view stacked on top
+  -- of it (a view of a view blocks the DROP just as hard), ordered so that a
+  -- view always comes after the views it depends on.
+  FOR v_rec IN
+    WITH RECURSIVE dependents AS (
+      SELECT c.oid AS view_oid, 0 AS depth
+        FROM pg_depend d
+        JOIN pg_rewrite r ON r.oid = d.objid
+        JOIN pg_class c   ON c.oid = r.ev_class
+       WHERE d.classid = 'pg_rewrite'::regclass
+         AND d.refclassid = 'pg_class'::regclass
+         AND d.refobjid = p_table
+         AND d.refobjsubid = v_attnum
+         AND r.rulename = '_RETURN'
+         AND c.relkind IN ('v', 'f')
+      UNION
+      SELECT c.oid, dependents.depth + 1
+        FROM dependents
+        JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass
+                        AND d.refclassid = 'pg_class'::regclass
+                        AND d.refobjid = dependents.view_oid
+        JOIN pg_rewrite r ON r.oid = d.objid
+        JOIN pg_class c   ON c.oid = r.ev_class
+       WHERE r.rulename = '_RETURN'
+         AND c.relkind IN ('v', 'f')
+         AND c.oid <> dependents.view_oid   -- every rule depends on its own relation
+    )
+    SELECT format('%I.%I', n.nspname, c.relname)                  AS view_name,
+           regexp_replace(pg_get_viewdef(c.oid), E';\s*$', '')    AS definition,
+           COALESCE(array_to_string(c.reloptions, ', '), '')      AS options,
+           COALESCE((SELECT array_to_string(
+                              array_agg(format('GRANT %s ON %I.%I TO %s%s',
+                                               g.privs, n.nspname, c.relname, g.who,
+                                               CASE WHEN g.grantable THEN ' WITH GRANT OPTION' ELSE '' END)),
+                              E'\n')
+                       FROM (SELECT e.grantee,
+                                    string_agg(e.privilege_type, ', ') AS privs,
+                                    bool_or(e.is_grantable) AS grantable,
+                                    CASE WHEN e.grantee = 0 THEN 'PUBLIC'
+                                         ELSE quote_ident(e.grantee::regrole::text) END AS who
+                               FROM aclexplode(c.relacl) e
+                              GROUP BY e.grantee) g), '')         AS grants
+      FROM dependents
+      JOIN pg_class c     ON c.oid = dependents.view_oid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     GROUP BY c.oid, n.nspname, c.relname, c.reloptions, c.relacl
+     ORDER BY max(dependents.depth)
+  LOOP
+    v_names  := v_names  || v_rec.view_name;
+    v_defs   := v_defs   || v_rec.definition;
+    v_opts   := v_opts   || v_rec.options;
+    v_grants := v_grants || v_rec.grants;
+  END LOOP;
+
+  -- Drop every dependent view, dependents first (the list is bottom-up).
+  FOR v_i IN REVERSE coalesce(array_length(v_names, 1), 0) .. 1 LOOP
+    EXECUTE format('DROP VIEW %s', v_names[v_i]);
+  END LOOP;
+
+  EXECUTE format('ALTER TABLE %s ALTER COLUMN %I TYPE %s', p_table::text, p_column, p_type);
+
+  -- Rebuild them bottom-up with their original options and privileges.
+  FOR v_i IN 1 .. coalesce(array_length(v_names, 1), 0) LOOP
+    EXECUTE format('CREATE OR REPLACE VIEW %s AS %s', v_names[v_i], v_defs[v_i]);
+    IF v_opts[v_i] <> '' THEN
+      EXECUTE format('ALTER VIEW %s SET (%s)', v_names[v_i], v_opts[v_i]);
+    END IF;
+    FOREACH v_stmt IN ARRAY string_to_array(v_grants[v_i], E'\n') LOOP
+      IF btrim(v_stmt) <> '' THEN EXECUTE v_stmt; END IF;
+    END LOOP;
+  END LOOP;
+
+  RAISE NOTICE 'retype_column: %.% % -> %  (% view(s) rebuilt: %)',
+    p_table::text, p_column, v_current, p_type,
+    coalesce(array_length(v_names, 1), 0),
+    coalesce(array_to_string(v_names, ', '), '-');
+END;
+$$;
+
+-- DDL helper: usable by the owner (the SQL Editor / migration role) only.
+REVOKE ALL ON FUNCTION public.retype_column(regclass, text, text) FROM PUBLIC, anon, authenticated;
+
+-- ---------------------------------------------------------------------
 -- 3. LESSONS  (video lessons already used by the site)
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.lessons (
@@ -427,7 +575,12 @@ ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS total_points     NUMERIC
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS percentage       NUMERIC(5,2);
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS breakdown        JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS auto_graded      BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE public.submissions ALTER COLUMN score TYPE NUMERIC(8,2);
+
+-- Older installs created `score` as NUMERIC(6,2); fractional / weighted marks
+-- need NUMERIC(8,2). Goes through retype_column() because homework_catalog and
+-- student_analytics select this column and would otherwise block the ALTER
+-- with "cannot alter type of a column used by a view or rule".
+SELECT public.retype_column('public.submissions', 'score', 'NUMERIC(8,2)');
 
 CREATE INDEX IF NOT EXISTS submissions_student_id_idx    ON public.submissions(student_id);
 CREATE INDEX IF NOT EXISTS submissions_assignment_id_idx ON public.submissions(assignment_id);
@@ -469,7 +622,9 @@ ALTER TABLE public.homework_submissions ADD COLUMN IF NOT EXISTS total_points   
 ALTER TABLE public.homework_submissions ADD COLUMN IF NOT EXISTS percentage       NUMERIC(5,2);
 ALTER TABLE public.homework_submissions ADD COLUMN IF NOT EXISTS breakdown        JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE public.homework_submissions ADD COLUMN IF NOT EXISTS auto_graded      BOOLEAN NOT NULL DEFAULT true;
-ALTER TABLE public.homework_submissions ALTER COLUMN score TYPE NUMERIC(8,2);
+
+-- Same story as submissions.score above (safe no-op once it is NUMERIC(8,2)).
+SELECT public.retype_column('public.homework_submissions', 'score', 'NUMERIC(8,2)');
 
 CREATE INDEX IF NOT EXISTS homework_submissions_student_id_idx ON public.homework_submissions(student_id);
 CREATE INDEX IF NOT EXISTS homework_submissions_lesson_id_idx  ON public.homework_submissions(lesson_id);

@@ -9,7 +9,27 @@ Apply in Supabase SQL Editor:
 3. `bulk-messaging.sql` — progress-report RPCs.
 4. `migration-features.sql` — multi-group homework, admin student management RPCs, attendance cancellation, paginated student listing, signup group validation.
 
-The scripts use `IF NOT EXISTS`, `CREATE OR REPLACE`, and policy/trigger recreation where possible. Back up production before any migration and test on staging first.
+The scripts use `IF NOT EXISTS`, `CREATE OR REPLACE`, and policy/trigger recreation where possible, so they are safe to run more than once. Back up production before any migration and test on staging first.
+
+### Re-running the scripts
+
+`ALTER TABLE ... ALTER COLUMN ... TYPE` is the one statement Postgres refuses to make idempotent — it fails with
+
+```text
+ERROR:  cannot alter type of a column used by a view or rule
+DETAIL: rule _RETURN on view homework_catalog depends on column "score"
+```
+
+whenever a view already selects the column. `schema.sql` therefore never retypes a column directly: it calls `public.retype_column('<table>', '<column>', '<type>')`, which
+
+1. does nothing when the column already has the requested type, and
+2. otherwise drops every dependent view (including views stacked on top of them), changes the type, and rebuilds the views with their original `WITH (...)` options and privileges.
+
+`homework-grading.sql` uses the same helper, so run `schema.sql` before it. If you ever need to widen a column by hand in the SQL Editor, use the helper instead of a bare `ALTER`:
+
+```sql
+SELECT public.retype_column('public.submissions', 'score', 'NUMERIC(8,2)');
+```
 
 ## Entity relationships
 
