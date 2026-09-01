@@ -166,8 +166,15 @@ LANGUAGE sql
 STABLE
 SET search_path = public
 AS $$
-  -- Quiz history (newest first)
-  SELECT 'quiz', (qu.quiz_date::timestamptz), qu.title, gr.score, qu.max_score, NULL
+  -- Quiz history (newest first). The first branch names the union's result
+  -- columns, which is what the trailing ORDER BY is allowed to reference --
+  -- an un-aliased union has no column to sort by.
+  SELECT 'quiz' AS kind,
+         qu.quiz_date::timestamptz AS record_date,
+         qu.title AS title,
+         gr.score AS score,
+         qu.max_score AS max_score,
+         NULL::TEXT AS status
   FROM public.grades gr
   JOIN public.quizzes qu ON qu.id = gr.quiz_id
   WHERE gr.student_id = target_student
