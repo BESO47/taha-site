@@ -10,9 +10,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "npm run test:grading && npm run test:security && npm run test:messaging && npm --prefix server test",
+    "test": "npm run test:grading && npm run test:security && npm run test:ui && npm run test:database && npm run test:messaging && npm --prefix server test",
     "test:grading": "node scripts/test-grading.mjs",
     "test:security": "node scripts/test-security.mjs",
+    "test:ui": "node scripts/test-ui.mjs",
+    "test:database": "node scripts/test-database.mjs",
     "test:messaging": "node scripts/test-messaging.mjs",
     "check": "npm test && npm run build",
     "audit:dependencies": "npm audit && npm --prefix server audit",
@@ -32,6 +34,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^6.1.0",
     "autoprefixer": "^10.5.4",
+    "jsdom": "^30.0.1",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19",
     "vite": "^8.2.2"

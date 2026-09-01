@@ -54,6 +54,8 @@ In Supabase SQL Editor, apply the scripts in order:
 1. `schema.sql`
 2. `homework-grading.sql`
 3. `bulk-messaging.sql`
+4. `migration-features.sql`
+5. `homework-subpoints.sql`
 
 ### Gateway
 
@@ -118,6 +120,8 @@ scripts/                  local regression tests
 schema.sql                base schema, RLS, views, private storage
 homework-grading.sql      authoritative grading RPCs
 bulk-messaging.sql        set-based progress-report RPCs
+migration-features.sql    multi-group homework, admin student RPCs
+homework-subpoints.sql    nested MCQ subpoints, admin answer editing + audit
 docs/                     architecture, API, database, manuals, operations
 ```
 

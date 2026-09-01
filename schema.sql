@@ -726,6 +726,10 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Strip every known answer-key spelling from a JSON question array.
+-- Recurses into nested `subpoints`: a subpoint is a complete MCQ of its
+-- own, so its key must be redacted for non-admin readers exactly like the
+-- parent question's. (See homework-subpoints.sql for the identical copy
+-- applied to installs migrating forward.)
 CREATE OR REPLACE FUNCTION public.strip_assessment_answers(payload JSONB)
 RETURNS JSONB
 LANGUAGE sql
@@ -735,7 +739,24 @@ AS $$
   SELECT CASE
     WHEN jsonb_typeof(payload) <> 'array' THEN '[]'::jsonb
     ELSE COALESCE(
-      (SELECT jsonb_agg(item - 'answer' - 'correctAnswer' - 'correct' - 'correct_answer' ORDER BY ord)
+      (SELECT jsonb_agg(
+         (CASE
+            WHEN jsonb_typeof(item -> 'subpoints') = 'array'
+            THEN item || jsonb_build_object(
+                   'subpoints',
+                   COALESCE(
+                     (SELECT jsonb_agg(
+                        sp - 'answer' - 'correctAnswer' - 'correct' - 'correct_answer' - 'key' - 'modelAnswer'
+                        ORDER BY sp_ord)
+                      FROM jsonb_array_elements(item -> 'subpoints')
+                           WITH ORDINALITY AS s(sp, sp_ord)),
+                     '[]'::jsonb
+                   )
+                 )
+            ELSE item
+          END)
+         - 'answer' - 'correctAnswer' - 'correct' - 'correct_answer' - 'key' - 'modelAnswer'
+         ORDER BY ord)
        FROM jsonb_array_elements(payload) WITH ORDINALITY AS q(item, ord)),
       '[]'::jsonb
     )

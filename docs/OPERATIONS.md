@@ -18,6 +18,8 @@
    - `schema.sql`
    - `homework-grading.sql`
    - `bulk-messaging.sql`
+   - `migration-features.sql`
+   - `homework-subpoints.sql`
 3. In Authentication settings, decide whether email confirmation is required.
 4. Set Site URL and allowed redirect URLs, including `/reset-password` on production.
 5. Obtain project URL and public anon/publishable key.
@@ -219,6 +221,7 @@ Review major-version release notes and lockfile diffs. Never use `npm audit fix 
 | Email-confirmation signup profile insert error | Use the trigger-based current schema; do not restore direct browser profile insertion |
 | Catalog relation missing | Reapply current `schema.sql` and refresh PostgREST schema cache |
 | Homework grading unavailable | Apply `homework-grading.sql`; configured mode intentionally refuses insecure client grading fallback |
+| Subpoints not marked / admin answer edit missing | Apply `homework-subpoints.sql`; it upgrades `ph_mark_answers` and adds `admin_update_submission_answer` |
 | Homework feed empty | Check publication, active profile, matching year/group, and `homework_catalog` grants |
 | Explanation video remains locked | Submission must have status graded and non-null score for that user |
 | Upload rejected | Check private bucket migration, MIME/extension, size ≤10 MB, and user-folder prefix |

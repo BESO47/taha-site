@@ -8,6 +8,8 @@ import {
   toOptionLetter,
   buildAnswerKey,
   summarizeGrades,
+  romanNumeral,
+  withUpdatedAnswer,
 } from '../src/lib/grading.js'
 
 let passed = 0
@@ -125,6 +127,178 @@ check('class summary averages correctness percentages', () => {
   assert.equal(s.averagePercent, 75)
   assert.equal(s.totalCorrect, 4)
   assert.equal(s.totalIncorrect, 2)
+})
+
+/* ================================================================== */
+/* NESTED MCQ SUBPOINTS                                                */
+/* ================================================================== */
+console.log('\nNested MCQ subpoints\n')
+
+const SP_OPTIONS = ['A) Newton', 'B) Inertia', 'C) Zero net force', 'D) Friction']
+const nested = [
+  { id: 'q1', question: 'SI unit of current?', options: ['A) Ampere', 'B) Volt', 'C) Ohm', 'D) Joule'], answer: 'A', points: 2 },
+  {
+    id: 'q2',
+    question: 'Choose the correct answer for each of the following:',
+    // Deliberately wrong: a question with subpoints must be worth the SUM
+    // of its subpoint points, never this value.
+    points: 99,
+    subpoints: [
+      { id: 'sp_a', question: "Newton's first law?", options: SP_OPTIONS, answer: 'B', points: 1 },
+      { id: 'sp_b', question: 'What is inertia?', options: SP_OPTIONS, answer: 'C', points: 1 },
+      { id: 'sp_c', question: 'Net force is zero when…', options: SP_OPTIONS, answer: 'A', points: 1 },
+    ],
+  },
+]
+
+check('roman numerals are generated from position, not stored', () => {
+  assert.deepEqual([1, 2, 3, 4, 5, 9, 14, 40].map(romanNumeral),
+    ['i', 'ii', 'iii', 'iv', 'v', 'ix', 'xiv', 'xl'])
+  assert.equal(romanNumeral(0), '')
+  assert.equal(romanNumeral(11), 'xi')
+})
+
+check('subpoints are normalized with generated labels and stable ids', () => {
+  const [q2] = buildAnswerKey([nested[1]])
+  assert.deepEqual(q2.subpoints.map((s) => s.label), ['i', 'ii', 'iii'])
+  assert.deepEqual(q2.subpoints.map((s) => s.id), ['sp_a', 'sp_b', 'sp_c'])
+  assert.equal(q2.subpoints[1].correctLetter, 'C')
+  assert.equal(q2.subpoints[0].options.length, 4)
+})
+
+check('every subpoint is graded independently', () => {
+  const r = gradeSubmissionAgainstKey({
+    questions: nested,
+    answers: { q1: 'A', q2: { answer: '', subpoints: { sp_a: 'B', sp_b: 'A', sp_c: 'A' } } },
+  })
+  assert.equal(r.correctCount, 3, 'q1, i and iii are correct')
+  assert.equal(r.incorrectCount, 1, 'ii is wrong')
+  assert.equal(r.earnedPoints, 4)
+  assert.equal(r.percentage, 80)
+})
+
+check('a question with subpoints is worth the SUM of its subpoints (no double count)', () => {
+  const r = gradeSubmissionAgainstKey({ questions: nested, answers: {} })
+  assert.equal(r.totalPoints, 5, 'parent points of 99 are ignored: 2 + 1 + 1 + 1')
+  assert.equal(r.breakdown[1].points, 3)
+})
+
+check('subpoint breakdown carries label, key, mark and points', () => {
+  const r = gradeSubmissionAgainstKey({
+    questions: nested,
+    answers: { q2: { subpoints: { sp_a: 'B', sp_b: 'A', sp_c: 'A' } } },
+  })
+  const q2 = r.breakdown[1]
+  assert.equal(q2.hasSubpoints, true)
+  assert.deepEqual(q2.subpoints.map((s) => s.label), ['i', 'ii', 'iii'])
+  assert.deepEqual(q2.subpoints.map((s) => s.isCorrect), [true, false, true])
+  assert.deepEqual(q2.subpoints.map((s) => Number(s.earnedPoints)), [1, 0, 1])
+  assert.equal(q2.subpoints[1].correctLetter, 'C')
+  assert.equal(q2.isCorrect, false, 'the parent is correct only when all subpoints are')
+})
+
+check('deleting a subpoint re-numbers the survivors and keeps answers mapped', () => {
+  const trimmed = [{ ...nested[1], subpoints: [nested[1].subpoints[0], nested[1].subpoints[2]] }]
+  const r = gradeSubmissionAgainstKey({
+    questions: trimmed,
+    answers: { q2: { subpoints: { sp_a: 'B', sp_c: 'A' } } },
+  })
+  assert.deepEqual(r.breakdown[0].subpoints.map((s) => s.label), ['i', 'ii'])
+  assert.deepEqual(r.breakdown[0].subpoints.map((s) => s.subpointId), ['sp_a', 'sp_c'])
+  assert.equal(r.correctCount, 2, 'sp_c kept its answer after sp_b was removed')
+})
+
+check('legacy flat subpoint answers ("q2.sp_a") still grade', () => {
+  const r = gradeSubmissionAgainstKey({
+    questions: nested,
+    answers: { q1: 'A', 'q2.sp_a': 'B', 'q2.sp_b': 'C', 'q2.sp_c': 'A' },
+  })
+  assert.equal(r.correctCount, 4)
+  assert.equal(r.percentage, 100)
+})
+
+check('subpoint answers keyed by roman label are accepted too', () => {
+  const r = gradeSubmissionAgainstKey({
+    questions: nested,
+    answers: { q2: { subpoints: { i: 'B', ii: 'C', iii: 'A' } } },
+  })
+  assert.equal(r.correctCount, 3)
+})
+
+check('one subpoint answer can never stand in for the whole question', () => {
+  const r = gradeSubmissionAgainstKey({
+    questions: [nested[1]],
+    answers: { q2: 'B' },
+  })
+  assert.equal(r.correctCount, 0, 'a bare parent answer marks no subpoint')
+  assert.equal(r.unansweredCount, 3, 'all three subpoints stay unanswered')
+  assert.equal(r.earnedPoints, 0)
+})
+
+check('unanswered subpoints count as incorrect and are reported', () => {
+  const r = gradeSubmissionAgainstKey({
+    questions: [nested[1]],
+    answers: { q2: { subpoints: { sp_a: 'B' } } },
+  })
+  assert.equal(r.correctCount, 1)
+  assert.equal(r.incorrectCount, 2)
+  assert.equal(r.unansweredCount, 2)
+  assert.equal(r.answeredCount, 1)
+  assert.equal(r.gradedItems, 3, 'three subpoints were marked')
+  assert.equal(r.earnedPoints, 1)
+})
+
+check('withUpdatedAnswer changes one subpoint and leaves the rest alone', () => {
+  const key = buildAnswerKey(nested)
+  const start = { q1: 'A', q2: { answer: '', subpoints: { sp_a: 'B', sp_b: 'A', sp_c: 'A' } } }
+  const next = withUpdatedAnswer(start, key[1], key[1].subpoints[1], 'C')
+
+  assert.equal(next.q2.subpoints.sp_b, 'C', 'the target changed')
+  assert.equal(next.q2.subpoints.sp_a, 'B', 'siblings untouched')
+  assert.equal(next.q1, 'A', 'the flat answer untouched')
+  assert.equal(start.q2.subpoints.sp_b, 'A', 'the original map was not mutated')
+
+  const r = gradeSubmissionAgainstKey({ questions: nested, answers: next })
+  assert.equal(r.correctCount, 4)
+  assert.equal(r.percentage, 100)
+})
+
+check('withUpdatedAnswer keeps the nested shape when writing a parent answer', () => {
+  const key = buildAnswerKey(nested)
+  const next = withUpdatedAnswer({ q2: { subpoints: { sp_a: 'B' } } }, key[1], null, 'D')
+  assert.equal(next.q2.answer, 'D')
+  assert.equal(next.q2.subpoints.sp_a, 'B')
+})
+
+check('homework without subpoints is completely unaffected', () => {
+  const r = gradeSubmissionAgainstKey({ questions, answers: { q1: 'A', q2: 'C', q3: 'B' } })
+  assert.equal(r.correctCount, 3)
+  assert.equal(r.gradedItems, 3)
+  assert.equal(r.percentage, 100)
+  assert.deepEqual(r.breakdown.map((b) => b.hasSubpoints), [false, false, false])
+})
+
+check('an incomplete subpoint contributes no marks (no free points)', () => {
+  const r = gradeSubmissionAgainstKey({
+    questions: [{ id: 'q1', question: 'Pick', points: 1, subpoints: [{ id: 'a', question: 'No key', options: SP_OPTIONS, answer: '', points: 1 }] }],
+    answers: { q1: { subpoints: { a: 'B' } } },
+  })
+  assert.equal(r.hasAnswerKey, false)
+  assert.equal(r.totalPoints, 0)
+  assert.equal(r.percentage, 0)
+})
+
+check('legacy subpoints stored under `text` are still read', () => {
+  const r = gradeSubmissionAgainstKey({
+    questions: [{
+      id: 'q1', question: 'Pick', points: 1,
+      subpoints: [{ id: 'a', text: 'Legacy field name', options: SP_OPTIONS, answer: 'B', points: 2 }],
+    }],
+    answers: { q1: { subpoints: { a: 'B' } } },
+  })
+  assert.equal(r.correctCount, 1)
+  assert.equal(r.earnedPoints, 2)
+  assert.equal(r.breakdown[0].subpoints[0].question, 'Legacy field name')
 })
 
 console.log(`\n${passed} checks passed\n`)

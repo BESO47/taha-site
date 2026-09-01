@@ -52,21 +52,55 @@ Suspension blocks protected access and submissions. Student year/group are autho
 2. Enter title, description, year, optional branch/due date.
 3. **Target Groups**: Check one or more groups to restrict the homework to those groups. If no groups are selected, the homework is available to all students of the selected grade (general assignment). Multi-group uses a normalized junction table (`assignment_groups`), not comma-separated names.
 4. Add questions with choices, answer key, and positive point values.
-5. **Subpoints**: Click "Add Subpoint" on any question to add nested Roman-numeral sub-items (i, ii, iii…). Each subpoint has its own text, points value, and optional answer for auto-grading.
+5. **Subpoints**: Click **Add Subpoint** on any question to nest complete MCQs inside it. See *Nested subpoints* below.
 6. Optionally add HTTPS attachment and explanation-video URLs.
 7. Set publication status and save.
 
 Published entries are visible only to active matching-year students who belong to one of the selected groups (or all students if no groups selected). The student response never includes answer-key fields.
 
+### Nested subpoints
+
+A question can be a container for sub-items, e.g. "Choose the correct answer for each of the following" followed by i, ii, iii.
+
+- Every subpoint is a **complete MCQ**: its own text, four editable options (A/B/C/D), exactly one correct answer, and its own point value. There is no text-only subpoint, so nothing can end up unmarkable.
+- Subpoints are numbered **i, ii, iii…** automatically from their position. The numeral is never typed or stored; delete subpoint ii and the rest re-number themselves everywhere (editor, student paper, grading screen, results).
+- Use the up/down arrows to reorder. Reordering and deleting are safe because answers are keyed by each subpoint's stable id, not by its position.
+- Deleting a subpoint asks for confirmation, since students may already have answered it.
+- Once a question has subpoints its own options/answer/points fields are hidden: **the question's score is the sum of its subpoint points**, so nothing is double counted.
+- Saving is blocked until every question and subpoint is complete; the offending item is named in the error.
+
 ### Grade and regrade
 
 - Open submissions for an entry.
-- Review student answers and correctness breakdown.
+- Review student answers and correctness breakdown. For a question with subpoints, each subpoint is listed on its own row with its label, the student's answer, the correct answer, the mark and the points.
 - For written work, enter a valid score and feedback and save.
 - **Auto-grade all** invokes one database regrade RPC; it does not make an API request per student.
 - If an answer key changes, regrade all affected attempts and notify students.
 
 Explanation videos unlock only when status is graded and score is present.
+
+### Change a student's submitted answer
+
+From **Homework → submissions → view a submission**, every question and every subpoint has its own **Edit Answer** button.
+
+1. Pick the new option and press **Continue**.
+2. Confirm on the summary screen, which repeats the student, the homework, the question/subpoint and `previous → new`.
+3. The database re-marks the whole paper, updates score/percentage/status and refreshes the screen. You never type a score.
+
+Notes:
+
+- Only one answer changes per action; every other answer is left untouched.
+- The change is written to an append-only audit trail shown at the top of the submission, recording who changed what, from which value to which, the score before/after and the timestamp.
+- Authorization is enforced by the database, not by hiding the button: a student who calls the RPC directly is rejected.
+- If the homework has no answer key, the edit is saved but the submission is **not** promoted to "graded".
+
+### Change a student's password
+
+From **Students → open a student → Change Password**, set a new password directly.
+
+- The current password is never requested, read or displayed — Supabase stores only a bcrypt hash in `auth.users`, and nothing can reverse it. There is no password column on `profiles` and no hash ever reaches the browser.
+- Enter the new password twice (8+ characters). The change goes through an admin-only RPC that re-checks `is_admin()` in the database.
+- The student's own **Forgot password** recovery flow is unaffected and keeps working.
 
 ### Legacy lesson homework
 

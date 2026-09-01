@@ -3,6 +3,7 @@ import {
   ClipboardList, Check, Save, Eye, Loader2, Key, Users, Unlock, Lock,
   Plus, Trash2, Award, X, Sparkles, FileText, Pencil, ListChecks, CalendarClock,
   Send, AlertCircle, Target, RefreshCw, CheckCircle2, XCircle, PlayCircle,
+  ChevronUp, ChevronDown, History, ShieldAlert,
 } from 'lucide-react'
 import { useLanguage } from '../../lib/i18n.jsx'
 import { YEARS } from '../../data/catalog'
@@ -12,28 +13,44 @@ import {
   fetchHomeworkEntries, createHomeworkEntry, updateHomeworkEntry, deleteHomeworkEntry,
   fetchSubmissionsForAssignment, upsertHomeworkSubmissionGrade, computeHomeworkTotalPoints,
   autoGradeAssignmentSubmissions, regradeLessonSubmissions,
+  validateHomeworkQuestions, adminUpdateSubmissionAnswer, fetchSubmissionAnswerEdits,
 } from '../../lib/api'
-import { gradeSubmissionAgainstKey, summarizeGrades } from '../../lib/grading'
+import {
+  gradeSubmissionAgainstKey, summarizeGrades, romanNumeral, OPTION_LETTERS,
+} from '../../lib/grading'
 import GroupFilterSelect, { getInitialGroupFilter } from './GroupFilterSelect.jsx'
 
 /* ------------------------------------------------------------------ */
 /* Editor helpers                                                      */
 /* ------------------------------------------------------------------ */
+const LETTERS = ['A', 'B', 'C', 'D']
+
+const blankOptions = () => LETTERS.map((l) => `${l}) `)
+
 const newQuestion = () => ({
   id: `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
   question: '',
-  options: ['A) ', 'B) ', 'C) ', 'D) '],
+  options: blankOptions(),
   answer: 'A',
   points: 1,
   subpoints: [],
 })
 
+/**
+ * A subpoint is ALWAYS a complete MCQ — text, four editable options,
+ * exactly one correct answer and its own points. There is deliberately no
+ * "text only" subpoint: the marking engine grades every subpoint against
+ * its own key, so a keyless subpoint would be unmarkable.
+ *
+ * The visible label (i, ii, iii…) is NOT stored: it is derived from the
+ * subpoint's position, so deleting or re-ordering re-numbers automatically.
+ */
 const newSubpoint = () => ({
   id: `sp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-  text: '',
-  points: 1,
-  options: [],
+  question: '',
+  options: blankOptions(),
   answer: '',
+  points: 1,
 })
 
 const EMPTY_FORM = () => ({
@@ -51,12 +68,20 @@ const EMPTY_FORM = () => ({
   questions: [newQuestion()],
 })
 
-const padOptions = (q) => {
-  const opts = Array.isArray(q.options) ? q.options : []
-  const padded = [...opts]
-  while (padded.length < 4) padded.push(`${['A', 'B', 'C', 'D'][padded.length]}) `)
-  return padded.slice(0, 4)
+const padOptions = (opts) => {
+  const list = Array.isArray(opts) ? [...opts] : []
+  while (list.length < 4) list.push(`${LETTERS[list.length]}) `)
+  return list.slice(0, 4).map((o) => (o == null ? '' : String(o)))
 }
+
+/** Read a stored subpoint: `question` is canonical, `text` is the legacy name. */
+const toSubpointForm = (sp, i) => ({
+  id: sp.id || `sp_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 8)}`,
+  question: sp.question ?? sp.text ?? '',
+  options: padOptions(sp.options),
+  answer: String(sp.answer ?? sp.correctAnswer ?? '') || '',
+  points: Number(sp.points) > 0 ? Number(sp.points) : 1,
+})
 
 const entryToForm = (e) => ({
   title: e.title || '',
@@ -70,26 +95,33 @@ const entryToForm = (e) => ({
   isPublished: e.isPublished !== false,
   groupName: e.groupName || '',
   groupIds: e.groupIds || [],
-  questions: (e.questions && e.questions.length ? e.questions : []).map((q) => ({
-    id: q.id || `q_${Math.random().toString(36).slice(2, 8)}`,
-    question: q.question || '',
-    options: q.options?.length ? padOptions(q) : ['A) ', 'B) ', 'C) ', 'D) '],
-    answer: q.answer || q.correctAnswer || '',
-    points: Number(q.points) || 1,
-    subpoints: Array.isArray(q.subpoints) ? q.subpoints.map((sp) => ({
-      id: sp.id || `sp_${Math.random().toString(36).slice(2, 8)}`,
-      text: sp.text || '',
-      points: Number(sp.points) || 1,
-      options: sp.options || [],
-      answer: sp.answer || '',
-    })) : [],
-  })),
+  questions: (e.questions && e.questions.length ? e.questions : []).map((q) => {
+    const subpoints = Array.isArray(q.subpoints) ? q.subpoints.filter(Boolean) : []
+    return {
+      id: q.id || `q_${Math.random().toString(36).slice(2, 8)}`,
+      question: q.question ?? q.text ?? '',
+      options: padOptions(q.options),
+      answer: String(q.answer ?? q.correctAnswer ?? '') || 'A',
+      points: Number(q.points) > 0 ? Number(q.points) : 1,
+      subpoints: subpoints.map(toSubpointForm),
+    }
+  }),
 })
 
 const STATUS_PILL = {
   graded: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300',
   submitted: 'bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300',
   not_submitted: 'bg-slate-100 text-slate-500 dark:bg-zinc-800 dark:text-zinc-400',
+}
+
+/**
+ * Roman label of a subpoint inside a graded breakdown, so the audit trail
+ * can name the item it refers to ("ii") instead of showing a raw id.
+ */
+const subpointLabelFor = (breakdown = [], questionId, subpointId) => {
+  const q = (breakdown || []).find((b) => String(b.questionId) === String(questionId))
+  const sp = (q?.subpoints || []).find((s) => String(s.subpointId) === String(subpointId))
+  return sp?.label || romanNumeral(sp?.number) || subpointId
 }
 
 /* ================================================================== */
@@ -113,6 +145,7 @@ export default function HomeworkTab() {
   const [editor, setEditor] = useState(null) // null | 'create' | entry
   const [form, setForm] = useState(EMPTY_FORM())
   const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
 
   /* ----- Submissions & grading state ----- */
   const [viewingEntry, setViewingEntry] = useState(null)
@@ -125,6 +158,17 @@ export default function HomeworkTab() {
   const [autoGrading, setAutoGrading] = useState(false)
   const [regrading, setRegrading] = useState(false)
   const [reviewSub, setReviewSub] = useState(null)
+
+  /* ----- Admin answer editing (re-grades server-side, writes an audit row) ----- */
+  // { student, sub, questionId, questionNumber, subpointId, label, question,
+  //   options, currentAnswer, correctAnswer, points } | null
+  const [editAnswer, setEditAnswer] = useState(null)
+  const [editChoice, setEditChoice] = useState('')
+  const [confirmEdit, setConfirmEdit] = useState(false)
+  const [editBusy, setEditBusy] = useState(false)
+  const [editError, setEditError] = useState('')
+  const [auditRows, setAuditRows] = useState([])
+  const [showAudit, setShowAudit] = useState(false)
 
   /* ----- Lesson gating state (kept from the legacy HomeworkTab) ----- */
   const [lessons, setLessons] = useState([])
@@ -163,41 +207,38 @@ export default function HomeworkTab() {
     e.preventDefault()
     if (!form.title.trim()) return
 
-    for (const q of form.questions) {
-      if (!q.question.trim()) {
-        alert(t('questionMustHaveText'))
-        return
-      }
-      if (!(Number(q.points) > 0)) {
-        alert(t('questionPointsInvalid'))
-        return
-      }
+    // Nothing incomplete may be persisted: a subpoint without its four
+    // options or without a correct answer could never be marked.
+    const problem = validateHomeworkQuestions(form.questions, lang)
+    if (problem) {
+      setFormError(problem)
+      return
     }
+    setFormError('')
 
     setSaving(true)
     try {
       const payload = {
         ...form,
+        // api.js canonicalizes; this keeps the shape identical offline too.
         questions: form.questions.map((q) => {
+          const subs = (q.subpoints || []).filter(Boolean)
           const base = {
             id: q.id,
-            question: q.question.trim(),
+            question: String(q.question ?? '').trim(),
             points: Number(q.points) || 1,
           }
-          // Include options/answer for MCQ questions without subpoints
-          if (!q.subpoints?.length) {
-            base.options = q.options.map((o, i) => o || `${['A', 'B', 'C', 'D'][i]}) `)
-            base.answer = q.answer
-          }
-          // Include subpoints if present
-          if (q.subpoints?.length) {
-            base.subpoints = q.subpoints.map((sp) => ({
+          if (subs.length) {
+            base.subpoints = subs.map((sp) => ({
               id: sp.id,
-              text: sp.text.trim(),
+              question: String(sp.question ?? '').trim(),
+              options: padOptions(sp.options),
+              answer: sp.answer,
               points: Number(sp.points) || 1,
-              ...(sp.options?.length ? { options: sp.options } : {}),
-              ...(sp.answer ? { answer: sp.answer } : {}),
             }))
+          } else {
+            base.options = padOptions(q.options)
+            base.answer = q.answer
           }
           return base
         }),
@@ -240,12 +281,39 @@ export default function HomeworkTab() {
       ),
     }))
 
-  const removeSubpoint = (qIdx, spIdx) =>
+  /**
+   * Deleting a subpoint is destructive (a student may already have answered
+   * it), so it is confirmed. The survivors are re-numbered automatically
+   * because the roman label comes from the position, not from stored data.
+   */
+  const removeSubpoint = (qIdx, spIdx) => {
+    const sp = form.questions[qIdx]?.subpoints?.[spIdx]
+    const label = romanNumeral(spIdx + 1)
+    const question = lang === 'ar'
+      ? `حذف النقطة الفرعية (${label})؟ سيتم إعادة ترقيم الباقي تلقائياً.`
+      : `Delete subpoint ${label}? The remaining subpoints are re-numbered automatically.`
+    if (!confirm(question)) return
     setForm((prev) => ({
       ...prev,
       questions: prev.questions.map((q, i) =>
         i === qIdx ? { ...q, subpoints: q.subpoints.filter((_, si) => si !== spIdx) } : q
       ),
+    }))
+    if (sp) setFormError('')
+  }
+
+  /** Move a subpoint up/down; ids travel with it so answers stay mapped. */
+  const moveSubpoint = (qIdx, spIdx, dir) =>
+    setForm((prev) => ({
+      ...prev,
+      questions: prev.questions.map((q, i) => {
+        if (i !== qIdx) return q
+        const list = [...(q.subpoints || [])]
+        const target = spIdx + dir
+        if (target < 0 || target >= list.length) return q
+        ;[list[spIdx], list[target]] = [list[target], list[spIdx]]
+        return { ...q, subpoints: list }
+      }),
     }))
 
   const updateSubpoint = (qIdx, spIdx, patch) =>
@@ -335,6 +403,94 @@ export default function HomeworkTab() {
       alert(err.message)
     } finally {
       setAutoGrading(false)
+    }
+  }
+
+  /**
+   * Open one student's paper. The breakdown is re-derived from the answer
+   * key here (admins hold the key) so a paper stored before nested
+   * subpoints existed still shows per-subpoint detail.
+   */
+  const openReview = async (student, sub) => {
+    const derived = gradeSubmissionAgainstKey({
+      questions: viewingEntry?.questions || [],
+      answers: sub.answers || {},
+    })
+    const stored = Array.isArray(sub.breakdown) && sub.breakdown.length ? sub.breakdown : null
+    setReviewSub({
+      student,
+      sub,
+      // Prefer the stored server breakdown, but fall back to a freshly
+      // derived one whenever it does not carry subpoint detail yet.
+      breakdown: stored && stored.every((b) => !b.hasSubpoints || b.subpoints?.length)
+        ? stored
+        : derived.breakdown,
+    })
+    setAuditRows([])
+    setShowAudit(false)
+    setEditError('')
+    try {
+      setAuditRows(await fetchSubmissionAnswerEdits(sub.id))
+    } catch (err) {
+      console.warn('Could not load the answer audit trail:', err)
+    }
+  }
+
+  /** Ask to change ONE answer — a whole question or a single subpoint. */
+  const openEditAnswer = (row) => {
+    setEditAnswer(row)
+    setEditChoice(row.currentAnswer || '')
+    setConfirmEdit(false)
+    setEditError('')
+  }
+
+  const closeEditAnswer = () => {
+    setEditAnswer(null)
+    setEditChoice('')
+    setConfirmEdit(false)
+    setEditError('')
+  }
+
+  /**
+   * Persist the change. The database verifies the admin, rewrites only this
+   * one answer, re-marks the paper and records the audit row — the UI is
+   * refreshed from the server's response, never updated optimistically.
+   */
+  const handleConfirmEditAnswer = async () => {
+    if (!editAnswer || !editChoice) return
+    if (editChoice === editAnswer.currentAnswer) {
+      setEditError(lang === 'ar' ? 'الإجابة الجديدة مطابقة للحالية.' : 'The new answer is the same as the current one.')
+      return
+    }
+
+    setEditBusy(true)
+    setEditError('')
+    try {
+      await adminUpdateSubmissionAnswer({
+        submissionId: editAnswer.sub.id,
+        questionId: editAnswer.questionId,
+        subpointId: editAnswer.subpointId || null,
+        answer: editChoice,
+      })
+      setGradeMsg(lang === 'ar' ? 'تم تغيير الإجابة وإعادة التصحيح.' : 'Answer changed and the paper was re-graded.')
+      setTimeout(() => setGradeMsg(''), 4000)
+
+      // Re-read the submission list, then re-open the same paper so the
+      // admin sees the recalculated score immediately.
+      const rows = await fetchSubmissionsForAssignment(viewingEntry.id, viewingEntry)
+      setSubs(rows)
+      const fresh = rows.find((r) => r.id === editAnswer.sub.id)
+      if (fresh) {
+        await openReview(editAnswer.student, fresh)
+      } else {
+        setReviewSub(null)
+      }
+      closeEditAnswer()
+    } catch (err) {
+      // Nothing was changed optimistically, so the UI is still truthful.
+      setEditError(err.message || (lang === 'ar' ? 'تعذر تغيير الإجابة.' : 'The answer could not be changed.'))
+    } finally {
+      setEditBusy(false)
     }
   }
 
@@ -527,7 +683,7 @@ export default function HomeworkTab() {
               />
             </div>
             <button
-              onClick={() => { setEditor('create'); setForm(EMPTY_FORM()) }}
+              onClick={() => { setEditor('create'); setForm(EMPTY_FORM()); setFormError('') }}
               className="px-5 py-2.5 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-yellow-400/20 transition"
             >
               <Plus className="w-4 h-4" />
@@ -592,7 +748,7 @@ export default function HomeworkTab() {
                 <ClipboardList className="w-10 h-10 mx-auto text-slate-300 dark:text-zinc-700" />
                 <p className="text-sm font-bold">{t('noHomeworkYet')}</p>
                 <button
-                  onClick={() => { setEditor('create'); setForm(EMPTY_FORM()) }}
+                  onClick={() => { setEditor('create'); setForm(EMPTY_FORM()); setFormError('') }}
                   className="mt-2 px-4 py-2 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-black text-xs font-bold inline-flex items-center gap-1.5"
                 >
                   <Plus className="w-3.5 h-3.5" /> {t('newHomework')}
@@ -611,7 +767,7 @@ export default function HomeworkTab() {
                       <div className="min-w-0 space-y-1.5">
                         <div className="flex items-center gap-2 flex-wrap">
                           <button
-                            onClick={() => { setEditor(entry); setForm(entryToForm(entry)) }}
+                            onClick={() => { setEditor(entry); setForm(entryToForm(entry)); setFormError('') }}
                             className="font-bold text-sm hover:text-yellow-500 transition text-start"
                           >
                             {entry.title}
@@ -665,7 +821,7 @@ export default function HomeworkTab() {
                           <span>{t('submissionsAndGrading')}</span>
                         </button>
                         <button
-                          onClick={() => { setEditor(entry); setForm(entryToForm(entry)) }}
+                          onClick={() => { setEditor(entry); setForm(entryToForm(entry)); setFormError('') }}
                           className="p-2 rounded-xl bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 hover:text-yellow-500 transition"
                           title={t('editHomework')}
                         >
@@ -868,124 +1024,226 @@ export default function HomeworkTab() {
                             </button>
                           </div>
 
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9">
-                            {q.options.map((opt, oi) => {
-                              const letter = ['A', 'B', 'C', 'D'][oi]
-                              return (
-                                <div key={oi} className="flex items-center gap-1.5">
-                                  <input
-                                    type="text" value={opt}
-                                    onChange={(e) => {
-                                      const opts = [...q.options]
-                                      opts[oi] = e.target.value
-                                      updateQuestion(idx, { options: opts })
-                                    }}
-                                    placeholder={`${letter}) ${lang === 'ar' ? 'اختيار' : 'Option'}`}
-                                    className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() => updateQuestion(idx, { answer: letter })}
-                                    className={`min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:px-3 sm:py-2 rounded-lg text-sm font-extrabold transition ${
-                                      q.answer === letter
-                                        ? 'bg-emerald-500 text-white'
-                                        : 'bg-slate-100 dark:bg-zinc-800 text-slate-500 hover:border-emerald-400'
-                                    }`}
-                                    title={`${t('correctAnswer')}: ${letter}`}
-                                    aria-label={`${t('correctAnswer')}: ${letter}`}
-                                  >
-                                    ✓
-                                  </button>
-                                </div>
-                              )
-                            })}
-                          </div>
-
-                          <div className="flex items-center gap-3 ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9 flex-wrap">
-                            <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
-                              {t('correctAnswer')}:
-                              <select
-                                value={q.answer}
-                                onChange={(e) => updateQuestion(idx, { answer: e.target.value })}
-                                className="px-3 py-2.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm font-extrabold focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                              >
-                                {['A', 'B', 'C', 'D'].map((l) => <option key={l} value={l}>{l}</option>)}
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
-                              {t('pointsLabel')}:
-                              <input
-                                type="number" min="0.5" step="0.5" value={q.points}
-                                onChange={(e) => updateQuestion(idx, { points: e.target.value })}
-                                className="w-24 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                              />
-                            </label>
-                            <button
-                              type="button"
-                              onClick={() => addSubpoint(idx)}
-                              className="px-3 py-2 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-xs font-bold flex items-center gap-1.5 hover:bg-purple-100 transition"
-                            >
-                              <Plus className="w-3.5 h-3.5" />
-                              <span>{lang === 'ar' ? 'إضافة نقطة فرعية' : 'Add Subpoint'}</span>
-                            </button>
-                          </div>
-
-                          {/* Subpoints Editor */}
-                          {q.subpoints?.length > 0 && (
-                            <div className="ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9 space-y-2 border-t border-slate-200 dark:border-zinc-800 pt-3 mt-1">
-                              <p className="text-[11px] font-bold text-purple-600 dark:text-purple-400 flex items-center gap-1.5">
-                                <span>{lang === 'ar' ? 'النقاط الفرعية' : 'Subpoints'}:</span>
-                              </p>
-                              {q.subpoints.map((sp, spIdx) => {
-                                const romanNumerals = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x']
+                          {/* Parent options — hidden once the question is a
+                              container for subpoints, so the two levels can
+                              never be confused. */}
+                          {!q.subpoints?.length && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9">
+                              {q.options.map((opt, oi) => {
+                                const letter = LETTERS[oi]
                                 return (
-                                  <div key={sp.id} className="flex items-start gap-2 p-3 rounded-xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/50 dark:border-purple-800/50">
-                                    <span className="w-7 h-7 rounded-lg bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 flex items-center justify-center text-[11px] font-bold shrink-0 mt-1" dir="ltr">
-                                      {romanNumerals[spIdx] || (spIdx + 1)}
-                                    </span>
-                                    <div className="flex-1 min-w-0 space-y-2">
-                                      <textarea
-                                        rows={1}
-                                        value={sp.text}
-                                        onChange={(e) => updateSubpoint(idx, spIdx, { text: e.target.value })}
-                                        placeholder={lang === 'ar' ? 'نص النقطة الفرعية...' : 'Subpoint text...'}
-                                        className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm resize-y"
-                                      />
-                                      <div className="flex items-center gap-2 flex-wrap">
-                                        <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
-                                          {t('pointsLabel')}:
-                                          <input
-                                            type="number" min="0.5" step="0.5" value={sp.points}
-                                            onChange={(e) => updateSubpoint(idx, spIdx, { points: e.target.value })}
-                                            className="w-16 px-2 py-1 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs font-extrabold text-center"
-                                          />
-                                        </label>
-                                        {/* Optional MCQ for subpoint */}
-                                        <input
-                                          type="text"
-                                          value={sp.answer}
-                                          onChange={(e) => updateSubpoint(idx, spIdx, { answer: e.target.value })}
-                                          placeholder={lang === 'ar' ? 'الإجابة (اختياري)' : 'Answer (optional)'}
-                                          className="flex-1 min-w-[120px] px-2 py-1 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-xs"
-                                        />
-                                      </div>
-                                    </div>
+                                  <div key={oi} className="flex items-center gap-1.5">
+                                    <input
+                                      type="text" value={opt}
+                                      onChange={(e) => {
+                                        const opts = [...q.options]
+                                        opts[oi] = e.target.value
+                                        updateQuestion(idx, { options: opts })
+                                      }}
+                                      placeholder={`${letter}) ${lang === 'ar' ? 'اختيار' : 'Option'}`}
+                                      className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm"
+                                    />
                                     <button
                                       type="button"
-                                      onClick={() => removeSubpoint(idx, spIdx)}
-                                      className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 shrink-0"
+                                      onClick={() => updateQuestion(idx, { answer: letter })}
+                                      className={`min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:px-3 sm:py-2 rounded-lg text-sm font-extrabold transition ${
+                                        q.answer === letter
+                                          ? 'bg-emerald-500 text-white'
+                                          : 'bg-slate-100 dark:bg-zinc-800 text-slate-500 hover:border-emerald-400'
+                                      }`}
+                                      title={`${t('correctAnswer')}: ${letter}`}
+                                      aria-label={`${t('correctAnswer')}: ${letter}`}
                                     >
-                                      <Trash2 className="w-3.5 h-3.5" />
+                                      ✓
                                     </button>
                                   </div>
                                 )
                               })}
                             </div>
                           )}
+
+                          <div className="flex items-center gap-3 ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9 flex-wrap">
+                            {!q.subpoints?.length && (
+                              <>
+                                <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                                  {t('correctAnswer')}:
+                                  <select
+                                    value={q.answer}
+                                    onChange={(e) => updateQuestion(idx, { answer: e.target.value })}
+                                    className="px-3 py-2.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm font-extrabold focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                                  >
+                                    {LETTERS.map((l) => <option key={l} value={l}>{l}</option>)}
+                                  </select>
+                                </label>
+                                <label className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                                  {t('pointsLabel')}:
+                                  <input
+                                    type="number" min="0.5" step="0.5" value={q.points}
+                                    onChange={(e) => updateQuestion(idx, { points: e.target.value })}
+                                    className="w-24 px-3 py-2.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-black text-sm font-extrabold text-center focus:outline-none focus:ring-2 focus:ring-yellow-400"
+                                  />
+                                </label>
+                              </>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => addSubpoint(idx)}
+                              className="px-3 py-2 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-xs font-bold flex items-center gap-1.5 hover:bg-purple-100 transition"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>{t('addSubpoint')}</span>
+                            </button>
+                            {q.subpoints?.length > 0 && (
+                              <span className="text-[10px] font-bold text-purple-500">
+                                {lang === 'ar'
+                                  ? `درجة السؤال = مجموع النقاط الفرعية (${computeHomeworkTotalPoints([q])})`
+                                  : `Question score = sum of subpoints (${computeHomeworkTotalPoints([q])})`}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* ---------------- SUBPOINTS EDITOR ---------------- */}
+                          {q.subpoints?.length > 0 && (
+                            <div className="ltr:pl-0 ltr:sm:pl-9 rtl:pr-0 rtl:sm:pr-9 space-y-2.5 border-t-2 border-dashed border-purple-200 dark:border-purple-900 pt-3.5 mt-1">
+                              <p className="text-[11px] font-bold text-purple-600 dark:text-purple-400 flex items-center gap-1.5">
+                                <ListChecks className="w-3.5 h-3.5" />
+                                <span>{t('subpointsLabel')} ({q.subpoints.length})</span>
+                                <span className="text-slate-400 font-normal">
+                                  — {lang === 'ar' ? 'الترقيم تلقائي (i, ii, iii)' : 'numbered automatically (i, ii, iii)'}
+                                </span>
+                              </p>
+
+                              {q.subpoints.map((sp, spIdx) => (
+                                <div
+                                  key={sp.id}
+                                  className="p-3 rounded-xl bg-purple-50/60 dark:bg-purple-950/25 border border-purple-200/60 dark:border-purple-800/60 space-y-2.5"
+                                >
+                                  {/* header: generated label + move + delete */}
+                                  <div className="flex items-start gap-2">
+                                    <span
+                                      className="w-8 h-8 rounded-lg bg-purple-500 text-white flex items-center justify-center text-[11px] font-extrabold shrink-0 font-mono"
+                                      dir="ltr"
+                                      title={lang === 'ar' ? 'الترقيم تلقائي' : 'Numbering is automatic'}
+                                    >
+                                      {romanNumeral(spIdx + 1)}
+                                    </span>
+                                    <div className="flex-1 min-w-0">
+                                      <label className="block text-[10px] font-bold text-purple-600 dark:text-purple-300 mb-1">
+                                        {t('subpointText')}
+                                      </label>
+                                      <textarea
+                                        rows={1}
+                                        value={sp.question}
+                                        onChange={(e) => updateSubpoint(idx, spIdx, { question: e.target.value })}
+                                        placeholder={lang === 'ar' ? 'نص النقطة الفرعية...' : 'Subpoint text...'}
+                                        className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm resize-y"
+                                      />
+                                    </div>
+                                    <div className="flex flex-col gap-1 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => moveSubpoint(idx, spIdx, -1)}
+                                        disabled={spIdx === 0}
+                                        className="p-1 rounded-md text-slate-400 hover:text-purple-600 hover:bg-purple-100 dark:hover:bg-purple-950/50 disabled:opacity-25"
+                                        title={lang === 'ar' ? 'تحريك لأعلى' : 'Move up'}
+                                        aria-label={lang === 'ar' ? 'تحريك لأعلى' : 'Move up'}
+                                      >
+                                        <ChevronUp className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => moveSubpoint(idx, spIdx, 1)}
+                                        disabled={spIdx === q.subpoints.length - 1}
+                                        className="p-1 rounded-md text-slate-400 hover:text-purple-600 hover:bg-purple-100 dark:hover:bg-purple-950/50 disabled:opacity-25"
+                                        title={lang === 'ar' ? 'تحريك لأسفل' : 'Move down'}
+                                        aria-label={lang === 'ar' ? 'تحريك لأسفل' : 'Move down'}
+                                      >
+                                        <ChevronDown className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => removeSubpoint(idx, spIdx)}
+                                      className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 shrink-0"
+                                      title={t('removeSubpoint')}
+                                      aria-label={t('removeSubpoint')}
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+
+                                  {/* the four editable MCQ options */}
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                    {sp.options.map((opt, oi) => {
+                                      const letter = LETTERS[oi]
+                                      return (
+                                        <div key={oi} className="flex items-center gap-1.5">
+                                          <input
+                                            type="text"
+                                            value={opt}
+                                            onChange={(e) => {
+                                              const opts = [...sp.options]
+                                              opts[oi] = e.target.value
+                                              updateSubpoint(idx, spIdx, { options: opts })
+                                            }}
+                                            placeholder={`${letter}) ${lang === 'ar' ? 'اختيار' : 'Option'}`}
+                                            className="flex-1 min-w-0 px-2.5 py-2 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs"
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={() => updateSubpoint(idx, spIdx, { answer: letter })}
+                                            className={`min-w-[40px] min-h-[40px] sm:min-w-0 sm:min-h-0 sm:px-2.5 sm:py-2 rounded-lg text-xs font-extrabold transition ${
+                                              sp.answer === letter
+                                                ? 'bg-emerald-500 text-white'
+                                                : 'bg-slate-100 dark:bg-zinc-800 text-slate-500 hover:border-emerald-400'
+                                            }`}
+                                            title={`${t('correctAnswer')}: ${letter}`}
+                                            aria-label={`${t('correctAnswer')}: ${letter}`}
+                                          >
+                                            ✓
+                                          </button>
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+
+                                  {/* correct answer + points */}
+                                  <div className="flex items-center gap-3 flex-wrap">
+                                    <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+                                      {t('correctAnswer')}:
+                                      <select
+                                        value={sp.answer}
+                                        onChange={(e) => updateSubpoint(idx, spIdx, { answer: e.target.value })}
+                                        className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs font-extrabold focus:outline-none focus:ring-2 focus:ring-purple-400"
+                                      >
+                                        <option value="">—</option>
+                                        {LETTERS.map((l) => <option key={l} value={l}>{l}</option>)}
+                                      </select>
+                                    </label>
+                                    <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+                                      {t('pointsLabel')}:
+                                      <input
+                                        type="number" min="0.5" step="0.5" value={sp.points}
+                                        onChange={(e) => updateSubpoint(idx, spIdx, { points: e.target.value })}
+                                        className="w-16 px-2 py-1.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs font-extrabold text-center"
+                                      />
+                                    </label>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
                   </div>
+
+                  {formError && (
+                    <div className="p-3.5 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-xs font-bold flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{formError}</span>
+                    </div>
+                  )}
 
                   <div className="flex gap-3 pt-2">
                     <button
@@ -1177,7 +1435,7 @@ export default function HomeworkTab() {
                                 <div className="flex items-center justify-end gap-1.5">
                                   {sub?.hasAnswers && (
                                     <button
-                                      onClick={() => setReviewSub({ student, sub })}
+                                      onClick={() => openReview(student, sub)}
                                       title={t('answerReviewTitle')}
                                       className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-300 text-xs font-bold inline-flex items-center gap-1.5 hover:text-yellow-500"
                                     >
@@ -1209,53 +1467,297 @@ export default function HomeworkTab() {
 
       {/* -------- Per-student answer review (student answer vs answer key) -------- */}
       {reviewSub && (
-        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 max-w-2xl w-full space-y-4 max-h-[85vh] overflow-y-auto shadow-2xl border border-slate-200 dark:border-zinc-800">
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-5 sm:p-6 max-w-2xl w-full space-y-4 max-h-[88vh] overflow-y-auto shadow-2xl border border-slate-200 dark:border-zinc-800">
             <div className="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-zinc-800 pb-3">
-              <div>
+              <div className="min-w-0">
                 <h3 className="font-bold text-base flex items-center gap-2">
-                  <ListChecks className="w-5 h-5 text-yellow-500" />
-                  <span>{t('answerReviewTitle')} — {reviewSub.student.full_name}</span>
+                  <ListChecks className="w-5 h-5 text-yellow-500 shrink-0" />
+                  <span className="truncate">{t('answerReviewTitle')} — {reviewSub.student.full_name}</span>
                 </h3>
                 <p className="text-xs text-slate-500">
                   {t('correctAnswersLabel')}: {reviewSub.sub.correctCount ?? 0} ·{' '}
                   {t('incorrectAnswersLabel')}: {reviewSub.sub.incorrectCount ?? 0} ·{' '}
-                  {t('percentageLabel')}: {reviewSub.sub.percentage ?? 0}%
+                  {t('percentageLabel')}: {reviewSub.sub.percentage ?? 0}% ·{' '}
+                  <span className="font-mono">{reviewSub.sub.score ?? 0} / {reviewSub.sub.totalPoints ?? totalPointsOf(viewingEntry || {})}</span>
                 </p>
               </div>
-              <button onClick={() => setReviewSub(null)} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+              <button onClick={() => setReviewSub(null)} className="shrink-0 min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-400 hover:text-slate-600 text-xl">✕</button>
             </div>
 
-            <div className="space-y-2">
-              {(reviewSub.sub.breakdown?.length
-                ? reviewSub.sub.breakdown
-                : gradeSubmissionAgainstKey({
-                    questions: viewingEntry?.questions || [],
-                    answers: reviewSub.sub.answers || {},
-                  }).breakdown
-              ).map((b) => (
+            {/* Audit trail of previous admin answer changes */}
+            {auditRows.length > 0 && (
+              <div className="rounded-2xl border border-slate-200 dark:border-zinc-800 overflow-hidden">
+                <button
+                  onClick={() => setShowAudit((v) => !v)}
+                  className="w-full px-4 py-2.5 bg-slate-50 dark:bg-black/40 text-xs font-bold flex items-center justify-between gap-2 hover:bg-slate-100 dark:hover:bg-zinc-800/50 transition"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <History className="w-4 h-4 text-purple-500" />
+                    {lang === 'ar' ? 'سجل تغيير الإجابات' : 'Answer change history'} ({auditRows.length})
+                  </span>
+                  <ChevronDown className={`w-4 h-4 transition-transform ${showAudit ? 'rotate-180' : ''}`} />
+                </button>
+                {showAudit && (
+                  <ul className="divide-y divide-slate-100 dark:divide-zinc-800 text-[11px]">
+                    {auditRows.map((a) => (
+                      <li key={a.id} className="px-4 py-2.5 space-y-0.5">
+                        <span className="font-bold">
+                          {lang === 'ar' ? 'سؤال' : 'Question'} {a.questionId}
+                          {a.subpointId ? ` · ${subpointLabelFor(reviewSub.breakdown, a.questionId, a.subpointId)}` : ''}
+                        </span>
+                        <span className="font-mono text-slate-500" dir="ltr">
+                          {' '}{a.previousAnswer || '—'} → {a.newAnswer}
+                        </span>
+                        <span className="block text-slate-400">
+                          {a.editorName ? `${lang === 'ar' ? 'بواسطة' : 'by'} ${a.editorName} · ` : ''}
+                          {new Date(a.createdAt).toLocaleString(lang === 'ar' ? 'ar-EG' : 'en-GB')}
+                          {a.scoreAfter != null && ` · ${a.scoreBefore ?? 0} → ${a.scoreAfter}`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {reviewSub.breakdown.map((b) => (
                 <div
                   key={b.questionId || b.number}
-                  className={`p-3 rounded-xl border text-xs font-bold flex items-start justify-between gap-3 ${
-                    b.isCorrect
-                      ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800'
-                      : 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900'
-                  }`}
+                  className="rounded-xl border border-slate-200 dark:border-zinc-800 overflow-hidden"
                 >
-                  <span className="flex-1">
-                    {b.number}. {b.question}
-                  </span>
-                  <span className="font-mono shrink-0 flex items-center gap-1.5">
-                    {b.isCorrect
-                      ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                      : <XCircle className="w-4 h-4 text-red-500" />}
-                    <span>{b.studentLetter || b.studentAnswer || '—'}</span>
-                    {!b.isCorrect && <span className="text-emerald-600 dark:text-emerald-400">→ {b.correctAnswer || b.correctLetter || '—'}</span>}
-                    <span className="text-slate-400">({b.earnedPoints}/{b.points})</span>
-                  </span>
+                  {/* -------- parent question header -------- */}
+                  <div className={`px-3 py-2.5 text-xs font-bold flex items-start justify-between gap-3 ${
+                    b.isCorrect
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40'
+                      : 'bg-red-50 dark:bg-red-950/30'
+                  }`}>
+                    <span className="flex-1">
+                      <span className="text-yellow-600 dark:text-yellow-400">{b.number}.</span> {b.question}
+                    </span>
+                    <span className="font-mono shrink-0 flex items-center gap-1.5">
+                      {b.isCorrect
+                        ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                        : <XCircle className="w-4 h-4 text-red-500" />}
+                      {!b.hasSubpoints && <span>{b.studentLetter || b.studentAnswer || '—'}</span>}
+                      {!b.hasSubpoints && !b.isCorrect && (
+                        <span className="text-emerald-600 dark:text-emerald-400">→ {b.correctAnswer || b.correctLetter || '—'}</span>
+                      )}
+                      <span className="text-slate-400">({b.earnedPoints}/{b.points})</span>
+                    </span>
+                  </div>
+
+                  {/* -------- plain question: one editable answer -------- */}
+                  {!b.hasSubpoints && (
+                    <div className="px-3 py-2.5 flex items-center justify-between gap-3 bg-white dark:bg-zinc-900">
+                      <span className="text-[11px] text-slate-500 font-bold">
+                        {lang === 'ar' ? 'إجابة الطالب' : 'Student answer'}:{' '}
+                        <span className="font-mono text-slate-800 dark:text-zinc-200">{b.studentLetter || b.studentAnswer || '—'}</span>
+                        {' · '}
+                        {lang === 'ar' ? 'الصحيحة' : 'Correct'}:{' '}
+                        <span className="font-mono text-emerald-600 dark:text-emerald-400">{b.correctAnswer || '—'}</span>
+                      </span>
+                      {b.hasKey && (
+                        <button
+                          onClick={() => openEditAnswer({
+                            student: reviewSub.student,
+                            sub: reviewSub.sub,
+                            questionId: String(b.questionId),
+                            questionNumber: b.number,
+                            subpointId: null,
+                            label: '',
+                            question: b.question,
+                            options: b.options || [],
+                            currentAnswer: b.studentLetter || b.studentAnswer || '',
+                            correctAnswer: b.correctLetter || b.correctAnswer || '',
+                            points: b.points,
+                          })}
+                          className="shrink-0 px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[11px] font-bold inline-flex items-center gap-1.5 hover:bg-purple-100 transition"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          <span>{lang === 'ar' ? 'تعديل الإجابة' : 'Edit Answer'}</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* -------- nested subpoints, each editable on its own -------- */}
+                  {b.hasSubpoints && (
+                    <ul className="divide-y divide-slate-100 dark:divide-zinc-800 bg-white dark:bg-zinc-900">
+                      {(b.subpoints || []).map((sp) => (
+                        <li key={sp.subpointId} className="px-3 py-2.5 space-y-1.5">
+                          <p className="text-[11px] font-bold flex items-start gap-1.5">
+                            <span className="text-purple-600 dark:text-purple-300 font-mono shrink-0" dir="ltr">
+                              {sp.label || romanNumeral(sp.number)}
+                            </span>
+                            <span className="flex-1">{sp.question}</span>
+                            <span className={`shrink-0 font-mono inline-flex items-center gap-1 ${
+                              sp.isCorrect ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'
+                            }`}>
+                              {sp.isCorrect ? '✓' : '✕'}
+                              <span>{sp.earnedPoints}/{sp.points}</span>
+                            </span>
+                          </p>
+                          <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <span className="text-[11px] text-slate-500 font-bold">
+                              {lang === 'ar' ? 'إجابة الطالب' : 'Student answer'}:{' '}
+                              <span className="font-mono text-slate-800 dark:text-zinc-200">{sp.studentLetter || sp.studentAnswer || '—'}</span>
+                              {' · '}
+                              {lang === 'ar' ? 'الصحيحة' : 'Correct'}:{' '}
+                              <span className="font-mono text-emerald-600 dark:text-emerald-400">{sp.correctAnswer || '—'}</span>
+                            </span>
+                            {sp.hasKey && (
+                              <button
+                                onClick={() => openEditAnswer({
+                                  student: reviewSub.student,
+                                  sub: reviewSub.sub,
+                                  questionId: String(b.questionId),
+                                  questionNumber: b.number,
+                                  subpointId: String(sp.subpointId),
+                                  label: sp.label || romanNumeral(sp.number),
+                                  question: sp.question,
+                                  options: sp.options || [],
+                                  currentAnswer: sp.studentLetter || sp.studentAnswer || '',
+                                  correctAnswer: sp.correctLetter || sp.correctAnswer || '',
+                                  points: sp.points,
+                                })}
+                                className="shrink-0 px-3 py-1.5 rounded-lg bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300 text-[11px] font-bold inline-flex items-center gap-1.5 hover:bg-purple-100 transition"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                                <span>{lang === 'ar' ? 'تعديل الإجابة' : 'Edit Answer'}</span>
+                              </button>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* -------- Edit ONE answer (admin only, re-grades server-side) -------- */}
+      {editAnswer && (
+        <div className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-5 sm:p-6 max-w-md w-full space-y-4 max-h-[88vh] overflow-y-auto shadow-2xl border border-slate-200 dark:border-zinc-800">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 dark:border-zinc-800 pb-3">
+              <h3 className="font-bold text-base flex items-center gap-2">
+                <ShieldAlert className="w-5 h-5 text-purple-500 shrink-0" />
+                <span>{lang === 'ar' ? 'تعديل إجابة طالب' : "Edit Student's Answer"}</span>
+              </h3>
+              <button onClick={closeEditAnswer} className="shrink-0 min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-400 hover:text-slate-600 text-xl">✕</button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-[11px] font-bold text-amber-700 dark:text-amber-300 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>
+                {lang === 'ar'
+                  ? 'سيؤدي هذا إلى تعديل تسليم الطالب وإعادة تصحيح الورقة بالكامل تلقائياً، وتسجيل التغيير في السجل.'
+                  : "This changes the student's submitted work. The whole paper is re-graded automatically and the change is recorded in the audit trail."}
+              </span>
+            </div>
+
+            <dl className="grid grid-cols-1 gap-1.5 text-[11px] font-bold">
+              <div className="flex justify-between gap-3 p-2.5 rounded-lg bg-slate-50 dark:bg-black/40">
+                <dt className="text-slate-500">{lang === 'ar' ? 'الطالب' : 'Student'}</dt>
+                <dd className="truncate">{editAnswer.student.full_name}</dd>
+              </div>
+              <div className="flex justify-between gap-3 p-2.5 rounded-lg bg-slate-50 dark:bg-black/40">
+                <dt className="text-slate-500">{lang === 'ar' ? 'الواجب' : 'Homework'}</dt>
+                <dd className="truncate">{viewingEntry?.title}</dd>
+              </div>
+              <div className="flex justify-between gap-3 p-2.5 rounded-lg bg-slate-50 dark:bg-black/40">
+                <dt className="text-slate-500">{lang === 'ar' ? 'السؤال' : 'Question'}</dt>
+                <dd className="text-end">
+                  {editAnswer.questionNumber}
+                  {editAnswer.label ? <span className="font-mono text-purple-600 dark:text-purple-300" dir="ltr"> ({editAnswer.label})</span> : null}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3 p-2.5 rounded-lg bg-slate-50 dark:bg-black/40">
+                <dt className="text-slate-500">{lang === 'ar' ? 'الإجابة الحالية' : 'Current answer'}</dt>
+                <dd className="font-mono">{editAnswer.currentAnswer || '—'}</dd>
+              </div>
+            </dl>
+
+            <p className="text-[11px] font-bold text-slate-500">{editAnswer.question}</p>
+
+            {!confirmEdit ? (
+              <>
+                <div className="grid grid-cols-1 gap-1.5">
+                  {(editAnswer.options || []).map((opt, oi) => {
+                    const letter = OPTION_LETTERS[oi]
+                    const selected = editChoice === letter
+                    return (
+                      <button
+                        key={oi}
+                        type="button"
+                        onClick={() => { setEditChoice(letter); setEditError('') }}
+                        className={`px-3 py-2.5 rounded-xl text-xs font-bold border text-start transition ${
+                          selected
+                            ? 'bg-purple-500 border-purple-600 text-white'
+                            : 'bg-slate-50 dark:bg-black/40 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:border-purple-400/60'
+                        }`}
+                      >
+                        <span className="font-mono" dir="ltr">{letter})</span> {String(opt ?? '').replace(/^[A-F]\s*[).:\-–]\s*/, '')}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {editError && (
+                  <p className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-[11px] font-bold">
+                    {editError}
+                  </p>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={() => setConfirmEdit(true)}
+                    disabled={!editChoice || editChoice === editAnswer.currentAnswer}
+                    className="flex-1 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-extrabold text-xs"
+                  >
+                    {lang === 'ar' ? 'متابعة' : 'Continue'}
+                  </button>
+                  <button onClick={closeEditAnswer} className="px-5 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-xs">
+                    {t('cancel')}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="p-3.5 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 text-xs font-bold space-y-1">
+                  <p>{lang === 'ar' ? 'هل أنت متأكد من تغيير إجابة هذا الطالب؟' : "Are you sure you want to change this student's answer?"}</p>
+                  <p className="font-mono text-[11px] text-slate-600 dark:text-zinc-300" dir="ltr">
+                    {editAnswer.currentAnswer || '—'} → {editChoice}
+                  </p>
+                </div>
+
+                {editError && (
+                  <p className="p-2.5 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-[11px] font-bold">
+                    {editError}
+                  </p>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={handleConfirmEditAnswer}
+                    disabled={editBusy}
+                    className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-extrabold text-xs inline-flex items-center justify-center gap-2"
+                  >
+                    {editBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                    <span>{lang === 'ar' ? 'تأكيد التغيير' : 'Confirm Change'}</span>
+                  </button>
+                  <button onClick={() => { setConfirmEdit(false); setEditError('') }} disabled={editBusy}
+                    className="px-5 py-2.5 rounded-xl bg-slate-100 dark:bg-zinc-800 font-bold text-xs disabled:opacity-60">
+                    {lang === 'ar' ? 'رجوع' : 'Back'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

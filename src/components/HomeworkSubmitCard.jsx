@@ -5,7 +5,10 @@ import {
 } from 'lucide-react'
 import { useLanguage } from '../lib/i18n.jsx'
 import { submitAssignment, uploadSubmissionFile } from '../lib/api'
-import { OPTION_LETTERS, toOptionLetter } from '../lib/grading'
+import {
+  OPTION_LETTERS, toOptionLetter, normalizeQuestion, romanNumeral,
+  pickStudentAnswer, pickSubpointAnswer, withUpdatedAnswer,
+} from '../lib/grading'
 
 /**
  * One homework entry + this student's submission state and answer sheet.
@@ -35,11 +38,24 @@ export default function HomeworkSubmitCard({
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
 
-  const questions = useMemo(() => assignment.questions || [], [assignment.questions])
+  // Normalized once: stable ids, generated roman labels, per-subpoint keys.
+  const questions = useMemo(
+    () => (assignment.questions || []).map((q, i) => normalizeQuestion(q, i)),
+    [assignment.questions]
+  )
+  // The RAW definitions keep the answer key. Normalization drops `answer`
+  // on purpose, so the marking call must be given the original array.
+  const rawQuestions = useMemo(() => assignment.questions || [], [assignment.questions])
   const isMcq = questions.length > 0
   const isGraded = submission?.status === 'graded'
   const hasSubmitted = Boolean(submission)
   const totalPoints = assignment.totalPoints || assignment.total_points || assignment.max_score || 0
+
+  /** Every markable item = plain questions + every subpoint, counted once. */
+  const itemCount = useMemo(
+    () => questions.reduce((n, q) => n + (q.subpoints.length || 1), 0),
+    [questions]
+  )
 
   // Marking summary: freshly returned result first, otherwise the stored row.
   const summary = result || (submission?.correctCount != null
@@ -53,14 +69,45 @@ export default function HomeworkSubmitCard({
       }
     : null)
 
-  const pickAnswer = (qId, letter) => setAnswers((prev) => ({ ...prev, [String(qId)]: letter }))
+  const reviewOf = (q) => summary?.breakdown?.find(
+    (b) => String(b.questionId) === String(q.id) || Number(b.number) === q.number
+  )
+
+  /**
+   * The correct option letter of a marked item.
+   *
+   * The JS marker emits both `correctLetter` and `correctAnswer`; the SQL
+   * marker (which is what a server-graded paper carries) emits only
+   * `correctAnswer`. Resolve from whichever is present so the highlighted
+   * key looks identical however the paper was marked.
+   */
+  const keyLetterOf = (row, options) =>
+    toOptionLetter(row?.correctLetter || row?.correctAnswer || '', options)
+
+  /**
+   * Write exactly ONE answer. A question with subpoints stores the nested
+   * shape `{ answer, subpoints: { <subpoint id>: 'C' } }`; a plain question
+   * keeps storing its bare letter, so papers saved before subpoints existed
+   * remain readable.
+   */
+  const pickAnswer = (question, subpoint, letter) =>
+    setAnswers((prev) => withUpdatedAnswer(prev, question, subpoint, letter))
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setError('')
 
     if (isMcq) {
-      const answered = questions.filter((q, i) => answers[String(q.id ?? i + 1)]).length
+      const answered = questions.reduce((n, q) => {
+        if (q.subpoints.length) {
+          return n + q.subpoints.filter((sp) => {
+            const v = pickSubpointAnswer(answers, q, sp)
+            return v !== undefined && v !== null && String(v).trim() !== ''
+          }).length
+        }
+        const v = pickStudentAnswer(answers, q)
+        return n + (v !== undefined && v !== null && String(v).trim() !== '' ? 1 : 0)
+      }, 0)
       if (answered === 0) {
         setError(lang === 'ar' ? 'اختر إجابة لسؤال واحد على الأقل.' : 'Answer at least one question.')
         return
@@ -81,7 +128,7 @@ export default function HomeworkSubmitCard({
         content: content.trim(),
         fileUrl,
         answers: isMcq ? answers : null,
-        questions,
+        questions: rawQuestions,
       })
 
       if (isMcq && res && res.percentage != null) setResult(res)
@@ -177,35 +224,32 @@ export default function HomeworkSubmitCard({
 
           {showQuestions && (
             <div className="p-4 space-y-4 bg-white dark:bg-zinc-900">
-              {questions.map((q, qi) => {
-                const qId = String(q.id ?? qi + 1)
-                const chosen = toOptionLetter(answers[qId], q.options)
-                const reviewed = summary?.breakdown?.find(
-                  (b) => String(b.questionId) === qId || Number(b.number) === qi + 1
-                )
+              {questions.map((q) => {
+                const reviewed = reviewOf(q)
                 const revealKey = Boolean(reviewed) || isGraded
-                const hasSubpoints = q.subpoints?.length > 0
-                const romanNumerals = ['i', 'ii', 'iii', 'iv', 'v', 'vi', 'vii', 'viii', 'ix', 'x']
 
                 return (
-                  <div key={qId} className="space-y-1.5">
+                  <div key={q.id} className="space-y-1.5">
                     <p className="text-xs font-bold flex items-start gap-1.5">
-                      <span className="text-yellow-500">{qi + 1}.</span>
+                      <span className="text-yellow-500 shrink-0">{q.number}.</span>
                       <span className="flex-1">{q.question}</span>
-                      <span className="text-[10px] text-slate-400 font-mono">({q.points || 1} {t('pointsLabel')})</span>
+                      <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                        ({reviewed?.points ?? q.points} {t('pointsLabel')})
+                      </span>
                       {reviewed && (
                         reviewed.isCorrect
                           ? <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                           : <XCircle className="w-4 h-4 text-red-500 shrink-0" />
                       )}
                     </p>
-                    {/* MCQ options (only for questions without subpoints) */}
-                    {!hasSubpoints && (
+
+                    {/* ---- Plain MCQ: one answer for the whole question ---- */}
+                    {!q.subpoints.length && (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                         {(q.options || []).map((opt, oi) => {
                           const letter = OPTION_LETTERS[oi]
-                          const correctAnswer = reviewed?.correctAnswer ?? q.answer ?? q.correctAnswer
-                          const isKey = revealKey && letter === toOptionLetter(correctAnswer, q.options)
+                          const chosen = toOptionLetter(pickStudentAnswer(answers, q), q.options)
+                          const isKey = revealKey && letter !== '' && letter === keyLetterOf(reviewed, q.options)
                           const isChosen = chosen === letter
                           const wrongChoice = revealKey && isChosen && !isKey
 
@@ -214,7 +258,7 @@ export default function HomeworkSubmitCard({
                               key={oi}
                               type="button"
                               disabled={isGraded || busy}
-                              onClick={() => pickAnswer(qId, letter)}
+                              onClick={() => pickAnswer(q, null, letter)}
                               className={`px-3 py-2 rounded-lg text-[11px] font-bold border text-start transition disabled:cursor-not-allowed ${
                                 isKey
                                   ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
@@ -234,52 +278,67 @@ export default function HomeworkSubmitCard({
                       </div>
                     )}
 
-                    {/* Subpoints rendering */}
-                    {hasSubpoints && (
-                      <div className="ltr:pl-4 rtl:pr-4 space-y-2 mt-2">
-                        {q.subpoints.map((sp, spIdx) => {
-                          const spId = `${qId}.${sp.id || spIdx}`
-                          const spChosen = answers[spId] || ''
-                          const hasSpOptions = sp.options?.length > 0
+                    {/* ---- Nested subpoints: each one its own MCQ ---- */}
+                    {q.subpoints.length > 0 && (
+                      <div className="ltr:pl-3 rtl:pr-3 sm:ltr:pl-4 sm:rtl:pr-4 space-y-2.5 mt-2 border-s-2 border-purple-200 dark:border-purple-900">
+                        {q.subpoints.map((sp) => {
+                          const spReview = reviewed?.subpoints?.find(
+                            (s) => String(s.subpointId) === String(sp.id)
+                          )
+                          const chosen = toOptionLetter(pickSubpointAnswer(answers, q, sp), sp.options)
+
                           return (
-                            <div key={sp.id || spIdx} className="p-2.5 rounded-xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/40 dark:border-purple-800/40 space-y-1.5">
+                            <div
+                              key={sp.id}
+                              className="p-2.5 rounded-xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-200/50 dark:border-purple-800/50 space-y-1.5"
+                            >
                               <p className="text-[11px] font-bold flex items-start gap-1.5">
-                                <span className="text-purple-500 shrink-0" dir="ltr">({romanNumerals[spIdx] || spIdx + 1})</span>
-                                <span className="flex-1">{sp.text}</span>
-                                <span className="text-[10px] text-slate-400 font-mono">({sp.points} {t('pointsLabel')})</span>
+                                {/* dir="ltr" keeps "ii"/"iii" from being visually
+                                    reordered by an RTL paragraph. */}
+                                <span className="text-purple-600 dark:text-purple-300 shrink-0 font-mono" dir="ltr">
+                                  {sp.label || romanNumeral(sp.number)}
+                                </span>
+                                <span className="flex-1">{sp.question}</span>
+                                <span className="text-[10px] text-slate-400 font-mono shrink-0">
+                                  ({spReview?.points ?? sp.points} {t('pointsLabel')})
+                                </span>
+                                {spReview && (
+                                  spReview.isCorrect
+                                    ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                    : <XCircle className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                                )}
                               </p>
-                              {hasSpOptions ? (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                                  {sp.options.map((opt, oi) => {
-                                    const letter = OPTION_LETTERS[oi]
-                                    const isChosen = spChosen === letter
-                                    return (
-                                      <button
-                                        key={oi}
-                                        type="button"
-                                        disabled={isGraded || busy}
-                                        onClick={() => setAnswers((prev) => ({ ...prev, [spId]: letter }))}
-                                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold border text-start transition disabled:cursor-not-allowed ${
-                                          isChosen
-                                            ? 'bg-yellow-400 border-yellow-500 text-black'
-                                            : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:border-purple-400/60'
-                                        }`}
-                                      >
-                                        {opt}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              ) : (
-                                <input
-                                  type="text"
-                                  value={spChosen}
-                                  onChange={(e) => setAnswers((prev) => ({ ...prev, [spId]: e.target.value }))}
-                                  disabled={isGraded || busy}
-                                  placeholder={lang === 'ar' ? 'إجابتك...' : 'Your answer...'}
-                                  className="w-full px-3 py-1.5 rounded-lg border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs disabled:opacity-60"
-                                />
-                              )}
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                                {(sp.options || []).map((opt, oi) => {
+                                  const letter = OPTION_LETTERS[oi]
+                                  const isKey = revealKey && letter !== '' && letter === keyLetterOf(spReview, sp.options)
+                                  const isChosen = chosen === letter
+                                  const wrongChoice = revealKey && isChosen && !isKey
+
+                                  return (
+                                    <button
+                                      key={oi}
+                                      type="button"
+                                      disabled={isGraded || busy}
+                                      onClick={() => pickAnswer(q, sp, letter)}
+                                      className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold border text-start transition disabled:cursor-not-allowed ${
+                                        isKey
+                                          ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300'
+                                          : wrongChoice
+                                            ? 'bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
+                                            : isChosen
+                                              ? 'bg-yellow-400 border-yellow-500 text-black'
+                                              : 'bg-white dark:bg-zinc-900 border-slate-200 dark:border-zinc-800 text-slate-600 dark:text-zinc-300 hover:border-purple-400/60'
+                                      }`}
+                                    >
+                                      {opt}
+                                      {isKey && ' ✓'}
+                                      {wrongChoice && ' ✕'}
+                                    </button>
+                                  )
+                                })}
+                              </div>
                             </div>
                           )
                         })}

@@ -29,6 +29,57 @@ Configured production mode does not fall back to client-computed scores. If the 
 
 Accepted key/answer representations include `A`–`F`, Arabic option letters, 0/1-based numeric indexes, prefixed labels, or matching option text. Missing keys are not awarded points.
 
+## Nested MCQ subpoints
+
+A question may carry an optional `subpoints` array. Each subpoint is a complete MCQ in its own right:
+
+```json
+{
+  "id": "q2",
+  "question": "Choose the correct answer for each of the following:",
+  "points": 99,
+  "subpoints": [
+    { "id": "sp_a", "question": "Newton's first law?", "options": ["A) w", "B) x", "C) y", "D) z"], "answer": "B", "points": 1 },
+    { "id": "sp_b", "question": "What is inertia?",    "options": ["A) w", "B) x", "C) y", "D) z"], "answer": "C", "points": 1 }
+  ]
+}
+```
+
+Marking rules (`ph_mark_answers` in SQL and `gradeSubmissionAgainstKey` in JS implement the same rules):
+
+- Every subpoint is marked independently against its own key.
+- A question **with** subpoints is worth `SUM(subpoint points)`; its own `points` is ignored, so nothing is double counted. In the example above the 99 is never used and the question is worth 2.
+- A question **without** subpoints is worth its own `points`, exactly as before.
+- `correct_count` / `incorrect_count` / `unanswered_count` are tallied per subpoint, so a three-subpoint question can read "2 correct, 1 incorrect".
+- The parent is reported correct only when every subpoint was answered correctly.
+
+Subpoints are numbered **i, ii, iii…** from their array position (`ph_roman()` in SQL, `romanNumeral()` in JS). The label is generated on read and never stored, so deleting or reordering subpoints re-numbers the survivors with no data migration and no answer re-mapping.
+
+### Answer storage
+
+Both shapes are accepted and may coexist in one submission; nothing is migrated:
+
+```jsonc
+// flat — a plain question
+{ "q1": "A" }
+
+// nested — a question with subpoints, keyed by stable subpoint id
+{ "q2": { "answer": "", "subpoints": { "sp_a": "B", "sp_b": "C" } } }
+```
+
+Legacy flat subpoint keys written by earlier builds (`"q2.sp_a"`) are still read, so existing submissions keep grading correctly.
+
+## Changing a submitted answer (admin only)
+
+`admin_update_submission_answer(submission_id, question_id, subpoint_id, new_answer)` is the only path that can modify a submitted answer:
+
+1. Verifies `is_admin()` in the database — a student calling it is rejected, and `anon` cannot invoke it at all.
+2. Resolves the question and subpoint **by stable id**; an unknown id raises rather than guessing a position.
+3. Validates the new answer against the item's real options and stores the canonical letter.
+4. Re-marks the whole paper with `ph_mark_answers` and writes score, counts, percentage and breakdown.
+5. Appends a row to `submission_answer_edits` (student, submission, question, subpoint, previous answer, new answer, admin, score before/after, timestamp). That table has no write policy and rejects `UPDATE`/`DELETE`, so the trail cannot be rewritten.
+6. A paper the marker cannot score (no answer key) keeps its existing status instead of being promoted to `graded`.
+
 ## Regrading
 
 Administrators use `regrade_assignment(uuid)` or `regrade_lesson_homework(uuid)`. The UI calls one set-based RPC rather than one write per student.
@@ -38,7 +89,9 @@ Administrators use `regrade_assignment(uuid)` or `regrade_lesson_homework(uuid)`
 ```text
 schema.sql
 homework-grading.sql
+migration-features.sql
+homework-subpoints.sql
 bulk-messaging.sql
 ```
 
-Then run `npm run test:grading` locally and the live homework/RLS checks in `docs/OPERATIONS.md`.
+Then run `npm test` locally — it covers the JS marker, the security invariants, the mounted UI in Arabic and English, and (when `embedded-postgres` is installed) the migrations and RPCs against a live PostgreSQL. See `docs/OPERATIONS.md` for the live homework/RLS checks.

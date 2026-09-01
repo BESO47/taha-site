@@ -19,6 +19,46 @@
 
 export const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F']
 
+/**
+ * =====================================================================
+ * SUBPOINT NUMBERING — lowercase roman numerals (i, ii, iii, iv, …)
+ * ---------------------------------------------------------------------
+ * Subpoints are numbered automatically from their ORDER in the question,
+ * never from a stored label. Deleting subpoint ii therefore re-numbers
+ * the remaining ones (i, ii, iii) with no data migration, in the admin
+ * editor, on the student paper, in the marking screen and in the results.
+ *
+ * The label is generated, so it is always rendered inside a `dir="ltr"`
+ * span: an RTL paragraph would otherwise visually reorder "ii" -> "ii"
+ * with the following punctuation and corrupt multi-character numerals.
+ * =====================================================================
+ */
+const ROMAN_STEPS = [
+  [1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'],
+  [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'],
+  [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i'],
+]
+
+/**
+ * 1-based ordinal -> lowercase roman numeral ("i", "ii", "iii", …).
+ * Falls back to the plain number outside the representable range so the
+ * UI can never render an empty label.
+ */
+export function romanNumeral(ordinal) {
+  const n = Math.trunc(Number(ordinal))
+  if (!Number.isFinite(n) || n < 1) return ''
+  if (n > 3999) return String(n)
+  let rest = n
+  let out = ''
+  for (const [value, glyph] of ROMAN_STEPS) {
+    while (rest >= value) {
+      out += glyph
+      rest -= value
+    }
+  }
+  return out
+}
+
 /** Arabic option letters used by some legacy answer keys. */
 const ARABIC_LETTER_MAP = { 'أ': 'A', 'ا': 'A', 'ب': 'B', 'ج': 'C', 'د': 'D', 'هـ': 'E', 'ه': 'E' }
 
@@ -101,9 +141,45 @@ export function toOptionLetter(raw, options = []) {
 }
 
 /**
+ * Normalize ONE nested subpoint into the same canonical shape the marker
+ * uses for a whole question. A subpoint is a complete MCQ of its own:
+ * it has its text, four options, one correct answer and its own points.
+ *
+ * `sp.text` is the historical field name used by the editor; `question`
+ * is the canonical one. Both are accepted so previously stored homework
+ * keeps working.
+ */
+export function normalizeSubpoint(subpoint, index = 0, parentId = '') {
+  const s = subpoint || {}
+  const id = String(s.id ?? s.subpointId ?? s.key ?? `${parentId || 'q'}_${index + 1}`)
+  const options = Array.isArray(s.options) ? s.options : []
+  const rawKey = s.answer ?? s.correctAnswer ?? s.correct ?? s.correct_answer ?? ''
+  const points = Number(s.points ?? s.mark ?? s.score ?? 1)
+
+  return {
+    id,
+    index,
+    /** 1-based position inside the parent question. */
+    number: index + 1,
+    /** Generated display label — never stored, never editable. */
+    label: romanNumeral(index + 1),
+    question: s.question ?? s.text ?? s.title ?? '',
+    options,
+    type: s.type || (options.length ? 'mcq' : 'text'),
+    rawKey,
+    correctLetter: toOptionLetter(rawKey, options),
+    correctText: stripOptionPrefix(rawKey),
+    points: Number.isFinite(points) && points > 0 ? points : 1,
+  }
+}
+
+/**
  * Normalize one question definition into the canonical shape used by the
  * marker. Supports every historical field name used in this codebase:
  *   answer | correctAnswer | correct | correct_answer | key | modelAnswer
+ *
+ * Optional nested `subpoints` are normalized too; their roman-numeral
+ * labels are derived from the array order on every read.
  */
 export function normalizeQuestion(question, index = 0) {
   const q = question || {}
@@ -112,6 +188,9 @@ export function normalizeQuestion(question, index = 0) {
   const rawKey =
     q.answer ?? q.correctAnswer ?? q.correct ?? q.correct_answer ?? q.key ?? q.modelAnswer ?? ''
   const points = Number(q.points ?? q.mark ?? q.score ?? 1)
+  const subpoints = Array.isArray(q.subpoints)
+    ? q.subpoints.filter(Boolean).map((sp, i) => normalizeSubpoint(sp, i, id))
+    : []
 
   return {
     id,
@@ -124,6 +203,8 @@ export function normalizeQuestion(question, index = 0) {
     correctLetter: toOptionLetter(rawKey, options),
     correctText: stripOptionPrefix(rawKey),
     points: Number.isFinite(points) && points > 0 ? points : 1,
+    subpoints,
+    hasSubpoints: subpoints.length > 0,
   }
 }
 
@@ -167,6 +248,15 @@ export function buildAnswerKey(questions = [], modelAnswers = null) {
           q.correctLetter = toOptionLetter(raw, q.options)
           q.correctText = stripOptionPrefix(raw)
         }
+        // A key may also target a subpoint directly (keyed by subpoint id).
+        q.subpoints.forEach((sp) => {
+          const spRaw = map.get(sp.id)
+          if (spRaw !== undefined) {
+            sp.rawKey = spRaw
+            sp.correctLetter = toOptionLetter(spRaw, sp.options)
+            sp.correctText = stripOptionPrefix(spRaw)
+          }
+        })
       })
       return list
     }
@@ -207,14 +297,24 @@ export function isAnswerCorrect(question, studentRaw) {
   return normalizeText(stripOptionPrefix(studentRaw)) === expected
 }
 
-/** Read the student's answer for a question from an answers map/array. */
-export function pickStudentAnswer(answers, question) {
+/**
+ * Read the RAW node stored for a question out of an answers map/array.
+ *
+ * Two shapes are supported, and both may coexist inside one submission:
+ *   1. flat    — `{ "q1": "B" }`                       (original format)
+ *   2. nested  — `{ "q1": { answer: "B",
+ *                             subpoints: { "sp_1": "C", "sp_2": "A" } } }`
+ *
+ * Nothing is migrated: a paper saved before nested subpoints existed keeps
+ * reading exactly as it did.
+ */
+function pickAnswerNode(answers, question) {
   if (!answers) return undefined
   if (Array.isArray(answers)) {
     const hit = answers.find(
       (a) => String(a?.questionId ?? a?.id ?? '') === question.id || Number(a?.index) === question.index
     )
-    if (hit) return hit.answer ?? hit.value ?? hit.choice ?? hit.letter
+    if (hit) return hit
     return answers[question.index]
   }
   if (typeof answers !== 'object') return undefined
@@ -229,8 +329,106 @@ export function pickStudentAnswer(answers, question) {
 }
 
 /**
+ * Read the student's answer for a question from an answers map/array.
+ * For a nested node this is the PARENT answer only — subpoints are read
+ * with `pickSubpointAnswer` so one answer can never stand in for a whole
+ * group of them.
+ */
+export function pickStudentAnswer(answers, question) {
+  const node = pickAnswerNode(answers, question)
+  if (node === undefined || node === null) return undefined
+  if (Array.isArray(answers)) {
+    if (typeof node === 'object') return node.answer ?? node.value ?? node.choice ?? node.letter
+    return node
+  }
+  if (typeof node === 'object') {
+    return node.answer ?? node.value ?? node.choice ?? node.letter ?? ''
+  }
+  return node
+}
+
+/**
+ * Read ONE subpoint's answer.
+ *
+ * Looks the answer up by the subpoint's STABLE ID first — never by array
+ * index alone — so deleting or re-ordering subpoints in the editor cannot
+ * silently re-map a student's answers onto different questions.
+ */
+export function pickSubpointAnswer(answers, question, subpoint) {
+  const node = pickAnswerNode(answers, question)
+
+  if (node && typeof node === 'object' && !Array.isArray(node)) {
+    const bag = node.subpoints ?? node.subpointsAnswers ?? node.sub ?? node.items
+    if (bag && typeof bag === 'object' && !Array.isArray(bag)) {
+      const hit = bag[subpoint.id] ?? bag[String(subpoint.number)] ?? bag[subpoint.label]
+      if (hit !== undefined && hit !== null) return hit
+    }
+  }
+
+  // Legacy flat keys written before the nested format: "q1.sp_1", "q1.0", "q1.i"
+  if (answers && typeof answers === 'object' && !Array.isArray(answers)) {
+    const legacy = [
+      `${question.id}.${subpoint.id}`,
+      `${question.id}.${subpoint.index}`,
+      `${question.id}.${subpoint.label}`,
+      `${question.number}.${subpoint.id}`,
+    ]
+    for (const key of legacy) {
+      if (answers[key] !== undefined && answers[key] !== null) return answers[key]
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Write ONE answer back into an answers map, preserving every other
+ * answer untouched. Used by the admin "edit answer" preview so the UI and
+ * the marker agree on the shape that gets persisted.
+ *
+ * @param {object} answers   existing answers map (never mutated)
+ * @param {object} question  normalized question (needs `id`)
+ * @param {object|null} subpoint  normalized subpoint, or null for the parent
+ * @param {string} letter    the new option letter ('' clears the answer)
+ */
+export function withUpdatedAnswer(answers = {}, question, subpoint, letter) {
+  const next = { ...(answers || {}) }
+  const qId = String(question.id)
+
+  if (!subpoint) {
+    const node = next[qId]
+    if (node && typeof node === 'object' && !Array.isArray(node)) {
+      next[qId] = { ...node, answer: letter }
+    } else {
+      next[qId] = letter
+    }
+    return next
+  }
+
+  const node = next[qId]
+  const nested = node && typeof node === 'object' && !Array.isArray(node)
+    ? { ...node }
+    : { answer: typeof node === 'string' ? node : '', subpoints: {} }
+  nested.subpoints = { ...(nested.subpoints || {}), [String(subpoint.id)]: letter }
+  next[qId] = nested
+  return next
+}
+
+/**
  * ============================ THE MARKER =============================
  * Grade a whole submission against the answer key.
+ *
+ * NESTED SUBPOINTS
+ *   A question may carry an optional `subpoints` array. Each subpoint is a
+ *   complete MCQ and is marked on its own, contributing its own points:
+ *
+ *     question with subpoints -> total = SUM(subpoint points)
+ *     question without        -> total = its own `points`
+ *
+ *   The parent's own `points` value is ignored whenever subpoints exist, so
+ *   adding subpoints can never double-count a question. `correctCount`,
+ *   `incorrectCount` and `unansweredCount` are tallied per subpoint, which
+ *   is why a three-subpoint question can read "2 correct / 1 incorrect".
  *
  * @param {object}  input
  * @param {Array}   input.questions     question definitions (with `answer`)
@@ -239,10 +437,10 @@ export function pickStudentAnswer(answers, question) {
  * @param {boolean} input.countUnansweredAsIncorrect  default true
  *
  * @returns {{
- *   totalQuestions:number, gradedQuestions:number, answeredCount:number,
- *   unansweredCount:number, correctCount:number, incorrectCount:number,
- *   earnedPoints:number, totalPoints:number, score:number, percentage:number,
- *   hasAnswerKey:boolean, breakdown:Array
+ *   totalQuestions:number, gradedQuestions:number, gradedItems:number,
+ *   answeredCount:number, unansweredCount:number, correctCount:number,
+ *   incorrectCount:number, earnedPoints:number, totalPoints:number,
+ *   score:number, percentage:number, hasAnswerKey:boolean, breakdown:Array
  * }}
  */
 export function gradeSubmissionAgainstKey({
@@ -256,18 +454,106 @@ export function gradeSubmissionAgainstKey({
   let correctCount = 0
   let incorrectCount = 0
   let unansweredCount = 0
+  let answeredCount = 0
   let earnedPoints = 0
   let totalPoints = 0
   let gradedQuestions = 0
+  let gradedItems = 0
 
   const breakdown = key.map((q) => {
+    /* ------------------------------------------------------------------
+     * QUESTION WITH NESTED SUBPOINTS
+     *   - every subpoint is marked independently against its own key
+     *   - the parent's total is the SUM of its subpoint points, so the
+     *     parent's own `points` value is never counted a second time
+     * ------------------------------------------------------------------ */
+    if (q.subpoints?.length) {
+      let spEarned = 0
+      let spTotal = 0
+      let spKeyed = false
+      let spAnsweredAny = false
+
+      const subpointRows = q.subpoints.map((sp) => {
+        const raw = pickSubpointAnswer(answers, q, sp)
+        const answered = raw !== undefined && raw !== null && String(raw).trim() !== ''
+        const keyed = hasKey(sp)
+        const correct = keyed && answered ? isAnswerCorrect(sp, raw) : false
+
+        if (answered) { answeredCount += 1; spAnsweredAny = true }
+
+        if (keyed) {
+          spKeyed = true
+          gradedItems += 1
+          spTotal += sp.points
+          totalPoints += sp.points
+          if (correct) {
+            correctCount += 1
+            spEarned += sp.points
+            earnedPoints += sp.points
+          } else if (!answered) {
+            unansweredCount += 1
+            if (countUnansweredAsIncorrect) incorrectCount += 1
+          } else {
+            incorrectCount += 1
+          }
+        } else if (!answered) {
+          unansweredCount += 1
+        }
+
+        return {
+          subpointId: sp.id,
+          label: sp.label,
+          number: sp.number,
+          question: sp.question,
+          options: sp.options,
+          points: sp.points,
+          hasKey: keyed,
+          answered,
+          studentAnswer: answered ? String(raw) : '',
+          studentLetter: toOptionLetter(raw, sp.options),
+          correctAnswer: sp.correctLetter || sp.correctText || '',
+          correctLetter: sp.correctLetter,
+          isCorrect: correct,
+          earnedPoints: correct ? sp.points : 0,
+        }
+      })
+
+      if (spKeyed) gradedQuestions += 1
+
+      const parentPoints = Math.round(spTotal * 100) / 100
+      return {
+        questionId: q.id,
+        number: q.number,
+        question: q.question,
+        options: q.options,
+        points: parentPoints,
+        hasKey: spKeyed,
+        hasSubpoints: true,
+        answered: spAnsweredAny,
+        // A parent with subpoints has no answer of its own: its mark is
+        // the sum of the subpoint marks, and it is "correct" only when
+        // every subpoint was answered correctly.
+        studentAnswer: '',
+        studentLetter: '',
+        correctAnswer: '',
+        correctLetter: '',
+        isCorrect: spKeyed && spTotal > 0 && spEarned === spTotal,
+        earnedPoints: Math.round(spEarned * 100) / 100,
+        subpoints: subpointRows,
+      }
+    }
+
+    /* ------------------------- NORMAL QUESTION ------------------------- */
     const studentRaw = pickStudentAnswer(answers, q)
     const answered = studentRaw !== undefined && studentRaw !== null && String(studentRaw).trim() !== ''
     const keyed = hasKey(q)
     const correct = keyed && answered ? isAnswerCorrect(q, studentRaw) : false
 
+    if (answered) answeredCount += 1
+
     if (keyed) {
       gradedQuestions += 1
+      gradedItems += 1
       totalPoints += q.points
       if (correct) {
         correctCount += 1
@@ -290,6 +576,7 @@ export function gradeSubmissionAgainstKey({
       options: q.options,
       points: q.points,
       hasKey: keyed,
+      hasSubpoints: false,
       answered,
       studentAnswer: answered ? String(studentRaw) : '',
       studentLetter,
@@ -297,6 +584,7 @@ export function gradeSubmissionAgainstKey({
       correctLetter: q.correctLetter,
       isCorrect: correct,
       earnedPoints: correct ? q.points : 0,
+      subpoints: [],
     }
   })
 
@@ -307,7 +595,9 @@ export function gradeSubmissionAgainstKey({
   return {
     totalQuestions: key.length,
     gradedQuestions,
-    answeredCount: breakdown.filter((b) => b.answered).length,
+    /** Gradable items = plain questions + every subpoint, counted once each. */
+    gradedItems,
+    answeredCount,
     unansweredCount,
     correctCount,
     incorrectCount,
